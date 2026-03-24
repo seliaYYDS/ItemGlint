@@ -1,0 +1,19 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "celia.itemglint.mixin.client",
+  "plugin": "celia.itemglint.mixin.ItemGlintMixinPlugin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "mixins.itemglint.refmap.json",
+  "client": [
+    "GameRendererAccessor",
+    "GameRendererMixin",
+    "GameRendererOculusMixin",
+    "ItemInHandRendererMixin",
+    "LevelRendererEmbeddiumMixin",
+    "OculusHandRendererMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

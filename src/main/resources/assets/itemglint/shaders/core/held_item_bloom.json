@@ -1,0 +1,69 @@
+{
+  "vertex": "itemglint:held_item_bloom",
+  "fragment": "itemglint:held_item_bloom",
+  "samplers": [
+    { "name": "DiffuseSampler" },
+    { "name": "NearBlurSampler" },
+    { "name": "FarBlurSampler" }
+  ],
+  "attributes": [
+    "Position",
+    "UV0"
+  ],
+  "uniforms": [
+    {
+      "name": "OutlineColor",
+      "type": "float",
+      "count": 4,
+      "values": [ 0.23, 0.95, 1.0, 1.0 ]
+    },
+    {
+      "name": "SecondaryColor",
+      "type": "float",
+      "count": 4,
+      "values": [ 1.0, 0.25, 0.78, 1.0 ]
+    },
+    {
+      "name": "AlphaThreshold",
+      "type": "float",
+      "count": 1,
+      "values": [ 0.10 ]
+    },
+    {
+      "name": "GlowStrength",
+      "type": "float",
+      "count": 1,
+      "values": [ 0.55 ]
+    },
+    {
+      "name": "BloomStrength",
+      "type": "float",
+      "count": 1,
+      "values": [ 0.20 ]
+    },
+    {
+      "name": "BloomRadius",
+      "type": "float",
+      "count": 1,
+      "values": [ 1.0 ]
+    },
+    {
+      "name": "ColorMode",
+      "type": "float",
+      "count": 1,
+      "values": [ 0.0 ]
+    },
+    {
+      "name": "ColorScrollSpeed",
+      "type": "float",
+      "count": 1,
+      "values": [ 1.0 ]
+    },
+    {
+      "name": "Time",
+      "type": "float",
+      "count": 1,
+      "values": [ 0.0 ]
+    }
+  ]
+}
