@@ -5,6 +5,15 @@ uniform sampler2D DepthSampler;
 uniform vec2 ScreenSize;
 uniform vec4 OutlineColor;
 uniform vec4 SecondaryColor;
+uniform float PaletteSize;
+uniform vec4 PaletteColor0;
+uniform vec4 PaletteColor1;
+uniform vec4 PaletteColor2;
+uniform vec4 PaletteColor3;
+uniform vec4 PaletteColor4;
+uniform vec4 PaletteColor5;
+uniform vec4 PaletteColor6;
+uniform vec4 PaletteColor7;
 uniform float OutlineWidth;
 uniform float Softness;
 uniform float AlphaThreshold;
@@ -14,8 +23,6 @@ uniform float GlowStrength;
 uniform float ColorMode;
 uniform float ColorScrollSpeed;
 uniform float Time;
-uniform float PulseSpeed;
-uniform float PulseAmount;
 
 in vec2 texCoord;
 
@@ -44,6 +51,30 @@ vec3 hsv2rgb(vec3 c) {
     return c.z * mix(vec3(1.0), rgb, c.y);
 }
 
+vec3 paletteColor(float index) {
+    if (index < 0.5) return PaletteColor0.rgb;
+    if (index < 1.5) return PaletteColor1.rgb;
+    if (index < 2.5) return PaletteColor2.rgb;
+    if (index < 3.5) return PaletteColor3.rgb;
+    if (index < 4.5) return PaletteColor4.rgb;
+    if (index < 5.5) return PaletteColor5.rgb;
+    if (index < 6.5) return PaletteColor6.rgb;
+    return PaletteColor7.rgb;
+}
+
+vec3 sampledScrollColor(vec2 uv) {
+    float size = max(PaletteSize, 1.0);
+    if (size < 1.5) {
+        return PaletteColor0.rgb;
+    }
+    float flow = fract(uv.x * 1.6 + uv.y * 1.1 - Time * 0.12 * ColorScrollSpeed);
+    float scaled = flow * size;
+    float idx0 = floor(scaled);
+    float idx1 = mod(idx0 + 1.0, size);
+    float blend = fract(scaled);
+    return mix(paletteColor(idx0), paletteColor(idx1), blend);
+}
+
 vec3 outlineBaseColor(vec2 uv) {
     if (ColorMode < 0.5) {
         return OutlineColor.rgb;
@@ -54,19 +85,16 @@ vec3 outlineBaseColor(vec2 uv) {
         float dualMix = 0.5 + 0.5 * sin(flow);
         return mix(OutlineColor.rgb, SecondaryColor.rgb, dualMix);
     }
-
-    float hue = fract(uv.x * 0.22 + uv.y * 0.14 - Time * 0.08 * ColorScrollSpeed);
-    return hsv2rgb(vec3(hue, 0.85, 1.0));
+    if (ColorMode < 2.5) {
+        float hue = fract(uv.x * 0.22 + uv.y * 0.14 - Time * 0.08 * ColorScrollSpeed);
+        return hsv2rgb(vec3(hue, 0.85, 1.0));
+    }
+    return sampledScrollColor(uv);
 }
 
 void main() {
     vec2 texel = 1.0 / max(ScreenSize, vec2(1.0));
-
-    float pulsePhase = sin(Time * PulseSpeed * 6.2831853);
-    float pulseWidth = 1.0 + pulsePhase * PulseAmount * 0.35;
-    float pulseBoost = 1.0 + max(0.0, pulsePhase) * PulseAmount * 2.4;
-
-    float radius = max(OutlineWidth * pulseWidth, 0.5);
+    float radius = max(OutlineWidth, 0.5);
     float softnessNorm = saturate((Softness - 0.10) / 3.90);
     float featherRadius = mix(0.45, 2.8, softnessNorm);
 
@@ -102,12 +130,12 @@ void main() {
     shell *= depthBoost;
 
     float glow = shell * shell * (0.35 + GlowStrength * 0.95);
-    float alpha = saturate((shell * pulseBoost + glow) * Opacity);
+    float alpha = saturate(shell + glow) * saturate(Opacity);
     if (alpha <= 0.001) {
         discard;
     }
 
     vec3 color = outlineBaseColor(texCoord);
-    color *= 1.0 + GlowStrength * 0.32 + depthContrast * DepthWeight * 0.14 + max(0.0, pulsePhase) * PulseAmount * 1.4;
+    color *= 1.0 + GlowStrength * 0.32 + depthContrast * DepthWeight * 0.14;
     fragColor = vec4(color, alpha);
 }

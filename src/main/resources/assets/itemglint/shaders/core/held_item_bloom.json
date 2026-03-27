@@ -24,10 +24,70 @@
       "values": [ 1.0, 0.25, 0.78, 1.0 ]
     },
     {
+      "name": "PaletteSize",
+      "type": "float",
+      "count": 1,
+      "values": [ 2.0 ]
+    },
+    {
+      "name": "PaletteColor0",
+      "type": "float",
+      "count": 4,
+      "values": [ 0.23, 0.95, 1.0, 1.0 ]
+    },
+    {
+      "name": "PaletteColor1",
+      "type": "float",
+      "count": 4,
+      "values": [ 1.0, 0.25, 0.78, 1.0 ]
+    },
+    {
+      "name": "PaletteColor2",
+      "type": "float",
+      "count": 4,
+      "values": [ 1.0, 0.75, 0.2, 1.0 ]
+    },
+    {
+      "name": "PaletteColor3",
+      "type": "float",
+      "count": 4,
+      "values": [ 0.6, 0.9, 0.3, 1.0 ]
+    },
+    {
+      "name": "PaletteColor4",
+      "type": "float",
+      "count": 4,
+      "values": [ 0.3, 0.7, 1.0, 1.0 ]
+    },
+    {
+      "name": "PaletteColor5",
+      "type": "float",
+      "count": 4,
+      "values": [ 0.5, 0.4, 1.0, 1.0 ]
+    },
+    {
+      "name": "PaletteColor6",
+      "type": "float",
+      "count": 4,
+      "values": [ 1.0, 0.4, 0.6, 1.0 ]
+    },
+    {
+      "name": "PaletteColor7",
+      "type": "float",
+      "count": 4,
+      "values": [ 0.95, 0.95, 0.95, 1.0 ]
+    },
+    {
       "name": "AlphaThreshold",
       "type": "float",
       "count": 1,
       "values": [ 0.10 ]
+    },
+    {
+      "name": "Opacity",
+      "type": "float",
+      "count": 1,
+      "values": [ 0.95 ]
     },
     {
       "name": "GlowStrength",

@@ -8,6 +8,7 @@ import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.ItemInHandRenderer;
 import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.world.InteractionHand;
 import org.joml.Matrix3f;
 import org.joml.Matrix4f;
 import org.spongepowered.asm.mixin.Final;
@@ -53,20 +54,23 @@ public abstract class GameRendererMixin {
             return;
         }
 
-        if (!HeldItemOutlineRenderer.beginCapture(minecraft, minecraft.getMainRenderTarget())) {
-            HeldItemOutlineRenderer.debugCompat(minecraft, "GameRendererMixin beginCapture returned false");
-            return;
-        }
+        for (HeldItemOutlineRenderer.HandEffectTarget target : HeldItemOutlineRenderer.getRenderableHands(player)) {
+            InteractionHand hand = target.hand();
+            if (!HeldItemOutlineRenderer.beginCapture(minecraft, minecraft.getMainRenderTarget(), hand)) {
+                HeldItemOutlineRenderer.debugCompat(minecraft, "GameRendererMixin beginCapture returned false for " + hand);
+                continue;
+            }
 
-        try {
-            poseStack.last().pose().set(originalPose);
-            poseStack.last().normal().set(originalNormal);
-            itemInHandRenderer.renderHandsWithItems(partialTick, poseStack, captureBufferSource, player, packedLight);
-            captureBufferSource.endBatch();
-            HeldItemOutlineRenderer.debugCompat(minecraft, "GameRendererMixin finished capture buffer batch");
-        } finally {
-            HeldItemOutlineRenderer.endCapture();
+            try {
+                poseStack.last().pose().set(originalPose);
+                poseStack.last().normal().set(originalNormal);
+                itemInHandRenderer.renderHandsWithItems(partialTick, poseStack, captureBufferSource, player, packedLight);
+                captureBufferSource.endBatch();
+                HeldItemOutlineRenderer.debugCompat(minecraft, "GameRendererMixin finished capture buffer batch for " + hand);
+            } finally {
+                HeldItemOutlineRenderer.endCapture();
+            }
+            HeldItemOutlineRenderer.composite(minecraft, minecraft.getMainRenderTarget(), hand, target.profile(), target.sampledColors());
         }
-        HeldItemOutlineRenderer.composite(minecraft, minecraft.getMainRenderTarget());
     }
 }

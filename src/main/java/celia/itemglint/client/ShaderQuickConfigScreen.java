@@ -6,6 +6,7 @@ import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.CycleButton;
 import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.client.gui.narration.NarrationElementOutput;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
@@ -21,21 +22,24 @@ import java.util.function.Function;
 public class ShaderQuickConfigScreen extends Screen {
     private static final int MAIN_WIDTH = 500;
     private static final int SIDEBAR_WIDTH = 168;
+    private static final int MIN_SIDEBAR_WIDTH = 92;
     private static final int PANEL_GAP = 12;
     private static final int PANEL_PADDING = 8;
     private static final int ROW_HEIGHT = 24;
     private static final int LABEL_WIDTH = 172;
-    private static final int FIELD_WIDTH = 246;
-    private static final int NAV_BUTTON_WIDTH = SIDEBAR_WIDTH - 24;
     private static final int COLOR_PICKER_SIZE = 176;
+    private static final int MIN_COLOR_PICKER_SIZE = 96;
     private static final int COLOR_BAR_WIDTH = 18;
     private static final int COLOR_CONTROL_LABEL_WIDTH = 70;
     private static final int COLOR_CONTROL_WIDTH = 180;
+    private static final int FRAME_MARGIN = 12;
+    private static final int SCROLL_HORIZONTAL_PADDING = 6;
 
     private final Screen parent;
     private final SettingsSnapshot snapshot;
     private final List<LabelLine> labels = new ArrayList<>();
     private final List<AbstractWidget> bloomDependentWidgets = new ArrayList<>();
+    private final List<AbstractWidget> autoSampleWidgets = new ArrayList<>();
     private final List<RowTooltipArea> rowTooltips = new ArrayList<>();
 
     private Page currentPage = Page.OVERVIEW;
@@ -45,7 +49,11 @@ public class ShaderQuickConfigScreen extends Screen {
     private boolean mainHand;
     private boolean offHand;
     private boolean bloom;
+    private boolean ruleSwitchDelayEnabled;
     private HeldItemOutlineSettings.ColorMode colorMode;
+    private int autoSampleSize;
+    private int autoSampleMaxColors;
+    private HeldItemOutlineSettings.SampleColorSortMode autoSampleSortMode;
     private HeldItemOutlineSettings.BloomResolution bloomResolution;
     private int bloomMaxPasses;
     private float bloomStrength;
@@ -57,14 +65,16 @@ public class ShaderQuickConfigScreen extends Screen {
     private float colorScrollSpeed;
     private float depthWeight;
     private float glowStrength;
-    private float pulseSpeed;
-    private float pulseAmount;
     private float red;
     private float green;
     private float blue;
     private float secondaryRed;
     private float secondaryGreen;
     private float secondaryBlue;
+    private HeldItemRuleManager.RuleMode ruleMode;
+    private List<String> whitelistEntries = new ArrayList<>();
+    private List<String> blacklistEntries = new ArrayList<>();
+    private List<HeldItemRuleManager.CustomRule> customRules = new ArrayList<>();
 
     private FloatSlider redSlider;
     private FloatSlider greenSlider;
@@ -73,6 +83,8 @@ public class ShaderQuickConfigScreen extends Screen {
     private BrightnessBarWidget brightnessBar;
     private EditBox hexField;
     private boolean syncingColorControls;
+    private int pageScrollOffset;
+    private int maxPageScrollOffset;
 
     public ShaderQuickConfigScreen(Screen parent) {
         super(Component.translatable("screen.itemglint.quick_config.title"));
@@ -91,6 +103,7 @@ public class ShaderQuickConfigScreen extends Screen {
         clearWidgets();
         this.labels.clear();
         this.bloomDependentWidgets.clear();
+        this.autoSampleWidgets.clear();
         this.rowTooltips.clear();
         this.redSlider = null;
         this.greenSlider = null;
@@ -101,8 +114,11 @@ public class ShaderQuickConfigScreen extends Screen {
 
         addNavigation();
 
-        int contentLeft = getMainLeft() + 18;
-        int contentTop = 74;
+        this.pageScrollOffset = Mth.clamp(this.pageScrollOffset, 0, getMaxPageScrollOffset());
+        this.maxPageScrollOffset = getMaxPageScrollOffset();
+
+        int contentLeft = getMainContentLeft();
+        int contentTop = getMainContentTop() - this.pageScrollOffset;
         switch (this.currentPage) {
             case OVERVIEW -> buildOverviewPage(contentLeft, contentTop);
             case SHAPE -> buildShapePage(contentLeft, contentTop);
@@ -111,16 +127,22 @@ public class ShaderQuickConfigScreen extends Screen {
         }
 
         int buttonY = this.height - 29;
+        int buttonGap = 8;
+        int buttonWidth = Math.max(72, Math.min(108, (getMainContentWidth() - buttonGap * 2) / 3));
+        int buttonsTotalWidth = buttonWidth * 3 + buttonGap * 2;
+        int buttonsLeft = contentLeft + Math.max(0, (getMainContentWidth() - buttonsTotalWidth) / 2);
+        this.addRenderableOnly(new FooterMaskWidget(getFrameLeft() - PANEL_PADDING - SCROLL_HORIZONTAL_PADDING, getFooterMaskTop(), getSidebarRight() - getFrameLeft() + PANEL_PADDING * 2 + SCROLL_HORIZONTAL_PADDING * 2, this.height - getFooterMaskTop()));
         this.addRenderableWidget(Button.builder(Component.translatable("screen.itemglint.shader_config.reset"), button -> {
                     resetToDefaults();
                     rebuildWidgets();
-                }).bounds(contentLeft, buttonY, 108, 20).build());
+                }).bounds(buttonsLeft, buttonY, buttonWidth, 20).build());
         this.addRenderableWidget(Button.builder(Component.translatable("gui.cancel"), button -> cancelAndClose())
-                .bounds(contentLeft + 120, buttonY, 96, 20).build());
+                .bounds(buttonsLeft + buttonWidth + buttonGap, buttonY, buttonWidth, 20).build());
         this.addRenderableWidget(Button.builder(Component.translatable("gui.done"), button -> saveAndClose())
-                .bounds(contentLeft + 228, buttonY, 96, 20).build());
+                .bounds(buttonsLeft + (buttonWidth + buttonGap) * 2, buttonY, buttonWidth, 20).build());
 
         updateBloomDependentState();
+        updateAutoSampleState();
         syncActiveColorControls();
     }
 
@@ -128,20 +150,46 @@ public class ShaderQuickConfigScreen extends Screen {
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         renderBackground(graphics);
         renderFrame(graphics);
+        graphics.enableScissor(getFrameLeft() - PANEL_PADDING - SCROLL_HORIZONTAL_PADDING, 44, getSidebarRight() + PANEL_PADDING + SCROLL_HORIZONTAL_PADDING, this.height);
         super.render(graphics, mouseX, mouseY, partialTick);
-
-        graphics.drawCenteredString(this.font, this.title, this.width / 2, 16, 0xFFFFFF);
-        graphics.drawString(this.font, Component.translatable(this.currentPage.titleKey), getMainLeft(), 36, 0xA7E7FF, false);
-        graphics.drawString(this.font, Component.translatable("screen.itemglint.quick_config.pages"), getSidebarLeft() + 12, 52, 0xAAB3C3, false);
-
         renderStoredText(graphics);
         renderSidebarSummary(graphics);
+        graphics.disableScissor();
+
+        graphics.drawCenteredString(this.font, this.title, this.width / 2, 16, 0xFFFFFF);
+        graphics.drawString(this.font, Component.translatable(this.currentPage.titleKey), getMainContentLeft(), 36, 0xA7E7FF, false);
+        graphics.drawString(this.font, Component.translatable("screen.itemglint.quick_config.pages"), getSidebarLeft() + getSidebarInset(), 52, 0xAAB3C3, false);
         renderHoveredTooltip(graphics, mouseX, mouseY);
     }
 
     @Override
     public void onClose() {
         cancelAndClose();
+    }
+
+    @Override
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (isInHiddenFrameArea(mouseX, mouseY) && !isMouseOverFooterButtons(mouseX, mouseY)) {
+            return true;
+        }
+        if (dispatchMouseClickTopmost(mouseX, mouseY, button)) {
+            return true;
+        }
+        return isInFooterMaskArea(mouseX, mouseY) && !isMouseOverFooterButtons(mouseX, mouseY);
+    }
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double scrollY) {
+        if (scrollY != 0.0D && isMouseOverScrollableArea(mouseX, mouseY) && this.maxPageScrollOffset > 0) {
+            int direction = scrollY > 0.0D ? -1 : 1;
+            int nextOffset = Mth.clamp(this.pageScrollOffset + direction * ROW_HEIGHT, 0, this.maxPageScrollOffset);
+            if (nextOffset != this.pageScrollOffset) {
+                this.pageScrollOffset = nextOffset;
+                rebuildWidgets();
+            }
+            return true;
+        }
+        return super.mouseScrolled(mouseX, mouseY, scrollY);
     }
 
     private void renderFrame(GuiGraphics graphics) {
@@ -177,7 +225,8 @@ public class ShaderQuickConfigScreen extends Screen {
     }
 
     private void renderSidebarSummary(GuiGraphics graphics) {
-        int x = getSidebarLeft() + 12;
+        int x = getSidebarLeft() + getSidebarInset();
+        int swatchX = getSidebarRight() - getSidebarInset() - 16;
         int y = 178;
 
         graphics.drawString(this.font, Component.translatable("screen.itemglint.quick_config.summary.title"), x, y, 0xA7E7FF, false);
@@ -189,6 +238,8 @@ public class ShaderQuickConfigScreen extends Screen {
         graphics.drawString(this.font, Component.translatable("screen.itemglint.quick_config.summary.mode", colorModeLabel(this.colorMode)), x, y, 0xE0E6EE, false);
         y += 12;
         graphics.drawString(this.font, Component.translatable("screen.itemglint.quick_config.summary.bloom", onOffLabel(this.bloom)), x, y, 0xE0E6EE, false);
+        y += 12;
+        graphics.drawString(this.font, Component.translatable("screen.itemglint.quick_config.summary.rules", this.ruleMode.label()), x, y, 0xE0E6EE, false);
         y += 18;
         graphics.drawString(this.font, Component.translatable("screen.itemglint.quick_config.summary.hotkey"), x, y, 0xAAB3C3, false);
         y += 12;
@@ -196,10 +247,10 @@ public class ShaderQuickConfigScreen extends Screen {
         y += 22;
 
         graphics.drawString(this.font, Component.translatable("screen.itemglint.quick_config.primary_color"), x, y, 0xA7E7FF, false);
-        drawSwatch(graphics, x + 92, y - 1, getColor(ColorTarget.PRIMARY), 16, 10);
+        drawSwatch(graphics, swatchX, y - 1, getColor(ColorTarget.PRIMARY), 16, 10);
         y += 16;
         graphics.drawString(this.font, Component.translatable("screen.itemglint.quick_config.secondary_color"), x, y, 0xFFADD9, false);
-        drawSwatch(graphics, x + 92, y - 1, getColor(ColorTarget.SECONDARY), 16, 10);
+        drawSwatch(graphics, swatchX, y - 1, getColor(ColorTarget.SECONDARY), 16, 10);
         y += 18;
 
         Component activeTarget = this.activeColorTarget.label();
@@ -209,13 +260,16 @@ public class ShaderQuickConfigScreen extends Screen {
     }
 
     private void addNavigation() {
-        int x = getSidebarLeft() + 12;
+        int x = getSidebarLeft() + getSidebarInset();
         int y = 74;
+        int buttonWidth = getNavButtonWidth();
         for (Page page : Page.values()) {
             Button button = Button.builder(Component.translatable(page.titleKey), ignored -> {
                         this.currentPage = page;
+                        this.pageScrollOffset = 0;
+                        this.maxPageScrollOffset = getMaxPageScrollOffset();
                         rebuildWidgets();
-                    }).bounds(x, y, NAV_BUTTON_WIDTH, 20).build();
+                    }).bounds(x, y, buttonWidth, 20).build();
             button.active = page != this.currentPage;
             this.addRenderableWidget(button);
             y += 24;
@@ -236,9 +290,23 @@ public class ShaderQuickConfigScreen extends Screen {
             this.bloom = value;
             updateBloomDependentState();
         }, Component.translatable("screen.itemglint.quick_config.tooltip.bloom"));
+        addBooleanRow(left, top + row++ * ROW_HEIGHT, Component.translatable("screen.itemglint.shader_config.outline.rule_switch_delay"), this.ruleSwitchDelayEnabled,
+                value -> this.ruleSwitchDelayEnabled = value,
+                Component.translatable("screen.itemglint.quick_config.tooltip.rule_switch_delay"));
         addEnumRow(left, top + row++ * ROW_HEIGHT, Component.translatable("screen.itemglint.shader_config.outline.color_mode"),
-                HeldItemOutlineSettings.ColorMode.values(), this.colorMode, value -> this.colorMode = value, this::colorModeLabel,
+                HeldItemOutlineSettings.ColorMode.values(), this.colorMode, value -> {
+                    this.colorMode = value;
+                    updateAutoSampleState();
+                }, this::colorModeLabel,
                 Component.translatable("screen.itemglint.quick_config.tooltip.color_mode"));
+        addEnumRow(left, top + row++ * ROW_HEIGHT, Component.translatable("screen.itemglint.shader_config.outline.rule_mode"),
+                HeldItemRuleManager.RuleMode.values(), this.ruleMode, value -> this.ruleMode = value, HeldItemRuleManager.RuleMode::label,
+                Component.translatable("screen.itemglint.quick_config.tooltip.rule_mode"));
+        Button editRulesButton = this.addRenderableWidget(Button.builder(Component.translatable("screen.itemglint.quick_config.edit_rules"), button -> openRuleEditor())
+                .bounds(left + getRowLabelWidth(), top + row * ROW_HEIGHT, getRowFieldWidth(), 20)
+                .build());
+        applyTooltip(editRulesButton, left, top + row * ROW_HEIGHT, getRowLabelWidth() + getRowFieldWidth(), 20,
+                Component.translatable("screen.itemglint.quick_config.tooltip.edit_rules"));
     }
 
     private void buildShapePage(int left, int top) {
@@ -276,18 +344,21 @@ public class ShaderQuickConfigScreen extends Screen {
         addFloatSliderRow(left, top + row++ * ROW_HEIGHT, Component.translatable("screen.itemglint.shader_config.outline.color_scroll_speed"),
                 this.colorScrollSpeed, HeldItemOutlineSettings.MIN_COLOR_SCROLL_SPEED, HeldItemOutlineSettings.MAX_COLOR_SCROLL_SPEED, value -> this.colorScrollSpeed = value,
                 Component.translatable("screen.itemglint.quick_config.tooltip.color_scroll_speed"));
+        trackAutoSampleWidget(addIntSliderRow(left, top + row++ * ROW_HEIGHT, Component.translatable("screen.itemglint.shader_config.outline.auto_sample_size"),
+                this.autoSampleSize, HeldItemOutlineSettings.MIN_AUTO_SAMPLE_SIZE, HeldItemOutlineSettings.MAX_AUTO_SAMPLE_SIZE, value -> this.autoSampleSize = value,
+                Component.translatable("screen.itemglint.quick_config.tooltip.auto_sample_size")));
+        trackAutoSampleWidget(addIntSliderRow(left, top + row++ * ROW_HEIGHT, Component.translatable("screen.itemglint.shader_config.outline.auto_sample_max_colors"),
+                this.autoSampleMaxColors, HeldItemOutlineSettings.MIN_AUTO_SAMPLE_MAX_COLORS, HeldItemOutlineSettings.MAX_AUTO_SAMPLE_MAX_COLORS, value -> this.autoSampleMaxColors = value,
+                Component.translatable("screen.itemglint.quick_config.tooltip.auto_sample_max_colors")));
+        trackAutoSampleWidget(addEnumRow(left, top + row++ * ROW_HEIGHT, Component.translatable("screen.itemglint.shader_config.outline.auto_sample_sort_mode"),
+                HeldItemOutlineSettings.SampleColorSortMode.values(), this.autoSampleSortMode, value -> this.autoSampleSortMode = value,
+                this::sampleSortModeLabel, Component.translatable("screen.itemglint.quick_config.tooltip.auto_sample_sort_mode")));
         addFloatSliderRow(left, top + row++ * ROW_HEIGHT, Component.translatable("screen.itemglint.shader_config.outline.depth_weight"),
                 this.depthWeight, HeldItemOutlineSettings.MIN_DEPTH_WEIGHT, HeldItemOutlineSettings.MAX_DEPTH_WEIGHT, value -> this.depthWeight = value,
                 Component.translatable("screen.itemglint.quick_config.tooltip.depth_weight"));
         addFloatSliderRow(left, top + row++ * ROW_HEIGHT, Component.translatable("screen.itemglint.shader_config.outline.glow_strength"),
                 this.glowStrength, HeldItemOutlineSettings.MIN_GLOW_STRENGTH, HeldItemOutlineSettings.MAX_GLOW_STRENGTH, value -> this.glowStrength = value,
                 Component.translatable("screen.itemglint.quick_config.tooltip.glow_strength"));
-        addFloatSliderRow(left, top + row++ * ROW_HEIGHT, Component.translatable("screen.itemglint.shader_config.outline.pulse_speed"),
-                this.pulseSpeed, HeldItemOutlineSettings.MIN_PULSE_SPEED, HeldItemOutlineSettings.MAX_PULSE_SPEED, value -> this.pulseSpeed = value,
-                Component.translatable("screen.itemglint.quick_config.tooltip.pulse_speed"));
-        addFloatSliderRow(left, top + row++ * ROW_HEIGHT, Component.translatable("screen.itemglint.shader_config.outline.pulse_amount"),
-                this.pulseAmount, HeldItemOutlineSettings.MIN_PULSE_AMOUNT, HeldItemOutlineSettings.MAX_PULSE_AMOUNT, value -> this.pulseAmount = value,
-                Component.translatable("screen.itemglint.quick_config.tooltip.pulse_amount"));
     }
 
     private void buildColorsPage(int left, int top) {
@@ -299,34 +370,40 @@ public class ShaderQuickConfigScreen extends Screen {
                     syncActiveColorControls();
                 }, ColorTarget::label, Component.translatable("screen.itemglint.quick_config.tooltip.active_target"));
         addEnumRow(left, top + ROW_HEIGHT, Component.translatable("screen.itemglint.shader_config.outline.color_mode"),
-                HeldItemOutlineSettings.ColorMode.values(), this.colorMode, value -> this.colorMode = value, this::colorModeLabel,
+                HeldItemOutlineSettings.ColorMode.values(), this.colorMode, value -> {
+                    this.colorMode = value;
+                    updateAutoSampleState();
+                }, this::colorModeLabel,
                 Component.translatable("screen.itemglint.quick_config.tooltip.color_mode"));
 
+        int pickerSize = getColorPickerSize();
+        int controlLabelWidth = getColorControlLabelWidth();
+        int controlWidth = getColorControlWidth();
         int pickerX = left + 6;
         int pickerY = top + 72;
-        int barX = pickerX + COLOR_PICKER_SIZE + 10;
+        int barX = pickerX + pickerSize + 10;
         int controlsX = barX + COLOR_BAR_WIDTH + 18;
 
-        this.colorPicker = this.addRenderableWidget(new ColorPickerBoxWidget(pickerX, pickerY, COLOR_PICKER_SIZE, COLOR_PICKER_SIZE,
+        this.colorPicker = this.addRenderableWidget(new ColorPickerBoxWidget(pickerX, pickerY, pickerSize, pickerSize,
                 getActiveHue(), getActiveSaturation(), getActiveValue(), (hue, saturation) -> {
             setActiveColorFromHsv(hue, saturation, getActiveValue());
             syncActiveColorControls();
         }));
-        addRowTooltip(pickerX, pickerY, COLOR_PICKER_SIZE, COLOR_PICKER_SIZE, Component.translatable("screen.itemglint.quick_config.tooltip.color_picker"));
-        this.brightnessBar = this.addRenderableWidget(new BrightnessBarWidget(barX, pickerY, COLOR_BAR_WIDTH, COLOR_PICKER_SIZE,
+        addRowTooltip(pickerX, pickerY, pickerSize, pickerSize, Component.translatable("screen.itemglint.quick_config.tooltip.color_picker"));
+        this.brightnessBar = this.addRenderableWidget(new BrightnessBarWidget(barX, pickerY, COLOR_BAR_WIDTH, pickerSize,
                 getActiveHue(), getActiveSaturation(), getActiveValue(), value -> {
             setActiveColorFromHsv(getActiveHue(), getActiveSaturation(), value);
             syncActiveColorControls();
         }));
-        addRowTooltip(barX, pickerY, COLOR_BAR_WIDTH, COLOR_PICKER_SIZE, Component.translatable("screen.itemglint.quick_config.tooltip.brightness"));
+        addRowTooltip(barX, pickerY, COLOR_BAR_WIDTH, pickerSize, Component.translatable("screen.itemglint.quick_config.tooltip.brightness"));
 
-        addLabel(Component.translatable("screen.itemglint.quick_config.color_hex_label"), controlsX, pickerY + 6, COLOR_CONTROL_LABEL_WIDTH, true, 0xFFFFFF);
-        this.hexField = new EditBox(this.font, controlsX + COLOR_CONTROL_LABEL_WIDTH, pickerY, COLOR_CONTROL_WIDTH, 20,
+        addLabel(Component.translatable("screen.itemglint.quick_config.color_hex_label"), controlsX, pickerY + 6, controlLabelWidth, true, 0xFFFFFF);
+        this.hexField = new EditBox(this.font, controlsX + controlLabelWidth, pickerY, controlWidth, 20,
                 Component.translatable("screen.itemglint.quick_config.color_hex_label"));
         this.hexField.setMaxLength(7);
         this.hexField.setResponder(this::onHexChanged);
         this.addRenderableWidget(this.hexField);
-        addRowTooltip(controlsX, pickerY, COLOR_CONTROL_LABEL_WIDTH + COLOR_CONTROL_WIDTH, 20, Component.translatable("screen.itemglint.quick_config.tooltip.hex"));
+        addRowTooltip(controlsX, pickerY, controlLabelWidth + controlWidth, 20, Component.translatable("screen.itemglint.quick_config.tooltip.hex"));
 
         this.redSlider = addColorSliderRow(controlsX, pickerY + 34, Component.translatable("screen.itemglint.shader_config.outline.red"), getActiveRed(), value -> {
             setActiveRed(value);
@@ -343,53 +420,63 @@ public class ShaderQuickConfigScreen extends Screen {
     }
 
     private CycleButton<Boolean> addBooleanRow(int left, int y, Component label, boolean value, Consumer<Boolean> consumer, Component tooltip) {
+        int labelWidth = getRowLabelWidth();
+        int fieldWidth = getRowFieldWidth();
         addLabel(label, left, y + 6);
         CycleButton<Boolean> widget = this.addRenderableWidget(CycleButton.onOffBuilder(value)
                 .displayOnlyValue()
-                .create(left + LABEL_WIDTH, y, FIELD_WIDTH, 20, Component.empty(), (button, newValue) -> consumer.accept(newValue)));
-        applyTooltip(widget, left, y, LABEL_WIDTH + FIELD_WIDTH, 20, tooltip);
+                .create(left + labelWidth, y, fieldWidth, 20, Component.empty(), (button, newValue) -> consumer.accept(newValue)));
+        applyTooltip(widget, left, y, labelWidth + fieldWidth, 20, tooltip);
         return widget;
     }
 
     private <T> CycleButton<T> addEnumRow(int left, int y, Component label, T[] values, T currentValue, Consumer<T> consumer, Function<T, Component> labeler, Component tooltip) {
+        int labelWidth = getRowLabelWidth();
+        int fieldWidth = getRowFieldWidth();
         addLabel(label, left, y + 6);
         CycleButton<T> widget = this.addRenderableWidget(CycleButton.<T>builder(labeler)
                 .withValues(values)
                 .withInitialValue(currentValue)
                 .displayOnlyValue()
-                .create(left + LABEL_WIDTH, y, FIELD_WIDTH, 20, Component.empty(), (button, newValue) -> consumer.accept(newValue)));
-        applyTooltip(widget, left, y, LABEL_WIDTH + FIELD_WIDTH, 20, tooltip);
+                .create(left + labelWidth, y, fieldWidth, 20, Component.empty(), (button, newValue) -> consumer.accept(newValue)));
+        applyTooltip(widget, left, y, labelWidth + fieldWidth, 20, tooltip);
         return widget;
     }
 
     private FloatSlider addFloatSliderRow(int left, int y, Component label, float value, float min, float max, Consumer<Float> consumer, Component tooltip) {
+        int labelWidth = getRowLabelWidth();
+        int fieldWidth = getRowFieldWidth();
         addLabel(label, left, y + 6);
-        FloatSlider widget = this.addRenderableWidget(new FloatSlider(left + LABEL_WIDTH, y, FIELD_WIDTH, 20, value, min, max, consumer));
-        applyTooltip(widget, left, y, LABEL_WIDTH + FIELD_WIDTH, 20, tooltip);
+        FloatSlider widget = this.addRenderableWidget(new FloatSlider(left + labelWidth, y, fieldWidth, 20, value, min, max, consumer));
+        applyTooltip(widget, left, y, labelWidth + fieldWidth, 20, tooltip);
         return widget;
     }
 
     private IntSlider addIntSliderRow(int left, int y, Component label, int value, int min, int max, Consumer<Integer> consumer, Component tooltip) {
+        int labelWidth = getRowLabelWidth();
+        int fieldWidth = getRowFieldWidth();
         addLabel(label, left, y + 6);
-        IntSlider widget = this.addRenderableWidget(new IntSlider(left + LABEL_WIDTH, y, FIELD_WIDTH, 20, value, min, max, consumer));
-        applyTooltip(widget, left, y, LABEL_WIDTH + FIELD_WIDTH, 20, tooltip);
+        IntSlider widget = this.addRenderableWidget(new IntSlider(left + labelWidth, y, fieldWidth, 20, value, min, max, consumer));
+        applyTooltip(widget, left, y, labelWidth + fieldWidth, 20, tooltip);
         return widget;
     }
 
     private FloatSlider addColorSliderRow(int left, int y, Component label, float value, Consumer<Float> consumer, Component tooltip) {
-        addLabel(label, left, y + 6, COLOR_CONTROL_LABEL_WIDTH, true, 0xFFFFFF);
-        FloatSlider widget = this.addRenderableWidget(new FloatSlider(left + COLOR_CONTROL_LABEL_WIDTH, y, COLOR_CONTROL_WIDTH, 20,
+        int labelWidth = getColorControlLabelWidth();
+        int fieldWidth = getColorControlWidth();
+        addLabel(label, left, y + 6, labelWidth, true, 0xFFFFFF);
+        FloatSlider widget = this.addRenderableWidget(new FloatSlider(left + labelWidth, y, fieldWidth, 20,
                 value, HeldItemOutlineSettings.MIN_COLOR, HeldItemOutlineSettings.MAX_COLOR, consumer));
-        applyTooltip(widget, left, y, COLOR_CONTROL_LABEL_WIDTH + COLOR_CONTROL_WIDTH, 20, tooltip);
+        applyTooltip(widget, left, y, labelWidth + fieldWidth, 20, tooltip);
         return widget;
     }
 
     private void addSection(Component text, int x, int y) {
-        addLabel(text, x, y, 440, false, 0xA7E7FF);
+        addLabel(text, x, y, Math.max(140, getMainContentWidth()), false, 0xA7E7FF);
     }
 
     private void addLabel(Component text, int x, int y) {
-        addLabel(text, x, y, LABEL_WIDTH - 8, true, 0xFFFFFF);
+        addLabel(text, x, y, Math.max(84, getRowLabelWidth() - 8), true, 0xFFFFFF);
     }
 
     private void addLabel(Component text, int x, int y, int maxWidth, boolean rightAligned, int color) {
@@ -409,9 +496,21 @@ public class ShaderQuickConfigScreen extends Screen {
         return widget;
     }
 
+    private <T extends AbstractWidget> T trackAutoSampleWidget(T widget) {
+        this.autoSampleWidgets.add(widget);
+        return widget;
+    }
+
     private void updateBloomDependentState() {
         for (AbstractWidget widget : this.bloomDependentWidgets) {
             widget.active = this.bloom;
+        }
+    }
+
+    private void updateAutoSampleState() {
+        boolean active = this.colorMode == HeldItemOutlineSettings.ColorMode.AUTO_SAMPLE_SCROLL;
+        for (AbstractWidget widget : this.autoSampleWidgets) {
+            widget.active = active;
         }
     }
 
@@ -420,7 +519,11 @@ public class ShaderQuickConfigScreen extends Screen {
         this.mainHand = HeldItemOutlineSettings.isMainHandEnabled();
         this.offHand = HeldItemOutlineSettings.isOffHandEnabled();
         this.bloom = HeldItemOutlineSettings.isBloomEnabled();
+        this.ruleSwitchDelayEnabled = HeldItemOutlineSettings.isRuleSwitchDelayEnabled();
         this.colorMode = HeldItemOutlineSettings.getColorMode();
+        this.autoSampleSize = HeldItemOutlineSettings.getAutoSampleSize();
+        this.autoSampleMaxColors = HeldItemOutlineSettings.getAutoSampleMaxColors();
+        this.autoSampleSortMode = HeldItemOutlineSettings.getAutoSampleSortMode();
         this.bloomResolution = HeldItemOutlineSettings.getBloomResolution();
         this.bloomMaxPasses = HeldItemOutlineSettings.getBloomMaxPasses();
         this.bloomStrength = HeldItemOutlineSettings.getBloomStrength();
@@ -432,14 +535,17 @@ public class ShaderQuickConfigScreen extends Screen {
         this.colorScrollSpeed = HeldItemOutlineSettings.getColorScrollSpeed();
         this.depthWeight = HeldItemOutlineSettings.getDepthWeight();
         this.glowStrength = HeldItemOutlineSettings.getGlowStrength();
-        this.pulseSpeed = HeldItemOutlineSettings.getPulseSpeed();
-        this.pulseAmount = HeldItemOutlineSettings.getPulseAmount();
         this.red = HeldItemOutlineSettings.getRed();
         this.green = HeldItemOutlineSettings.getGreen();
         this.blue = HeldItemOutlineSettings.getBlue();
         this.secondaryRed = HeldItemOutlineSettings.getSecondaryRed();
         this.secondaryGreen = HeldItemOutlineSettings.getSecondaryGreen();
         this.secondaryBlue = HeldItemOutlineSettings.getSecondaryBlue();
+        HeldItemRuleManager.StateSnapshot ruleSnapshot = HeldItemRuleManager.captureState();
+        this.ruleMode = ruleSnapshot.ruleMode();
+        this.whitelistEntries = new ArrayList<>(ruleSnapshot.whitelistEntries());
+        this.blacklistEntries = new ArrayList<>(ruleSnapshot.blacklistEntries());
+        this.customRules = new ArrayList<>(ruleSnapshot.customRules());
     }
 
     private void resetToDefaults() {
@@ -447,7 +553,11 @@ public class ShaderQuickConfigScreen extends Screen {
         this.mainHand = HeldItemOutlineSettings.DEFAULT_MAIN_HAND;
         this.offHand = HeldItemOutlineSettings.DEFAULT_OFF_HAND;
         this.bloom = HeldItemOutlineSettings.DEFAULT_BLOOM;
+        this.ruleSwitchDelayEnabled = HeldItemOutlineSettings.DEFAULT_RULE_SWITCH_DELAY_ENABLED;
         this.colorMode = HeldItemOutlineSettings.DEFAULT_COLOR_MODE;
+        this.autoSampleSize = HeldItemOutlineSettings.DEFAULT_AUTO_SAMPLE_SIZE;
+        this.autoSampleMaxColors = HeldItemOutlineSettings.DEFAULT_AUTO_SAMPLE_MAX_COLORS;
+        this.autoSampleSortMode = HeldItemOutlineSettings.DEFAULT_AUTO_SAMPLE_SORT_MODE;
         this.bloomResolution = HeldItemOutlineSettings.DEFAULT_BLOOM_RESOLUTION;
         this.bloomMaxPasses = HeldItemOutlineSettings.DEFAULT_BLOOM_MAX_PASSES;
         this.bloomStrength = HeldItemOutlineSettings.DEFAULT_BLOOM_STRENGTH;
@@ -459,8 +569,6 @@ public class ShaderQuickConfigScreen extends Screen {
         this.colorScrollSpeed = HeldItemOutlineSettings.DEFAULT_COLOR_SCROLL_SPEED;
         this.depthWeight = HeldItemOutlineSettings.DEFAULT_DEPTH_WEIGHT;
         this.glowStrength = HeldItemOutlineSettings.DEFAULT_GLOW_STRENGTH;
-        this.pulseSpeed = HeldItemOutlineSettings.DEFAULT_PULSE_SPEED;
-        this.pulseAmount = HeldItemOutlineSettings.DEFAULT_PULSE_AMOUNT;
         this.red = HeldItemOutlineSettings.DEFAULT_RED;
         this.green = HeldItemOutlineSettings.DEFAULT_GREEN;
         this.blue = HeldItemOutlineSettings.DEFAULT_BLUE;
@@ -468,6 +576,10 @@ public class ShaderQuickConfigScreen extends Screen {
         this.secondaryGreen = HeldItemOutlineSettings.DEFAULT_SECONDARY_GREEN;
         this.secondaryBlue = HeldItemOutlineSettings.DEFAULT_SECONDARY_BLUE;
         this.activeColorTarget = ColorTarget.PRIMARY;
+        this.ruleMode = HeldItemRuleManager.RuleMode.ALL;
+        this.whitelistEntries = new ArrayList<>();
+        this.blacklistEntries = new ArrayList<>();
+        this.customRules = new ArrayList<>();
     }
 
     private void applyValuesToSettings() {
@@ -475,7 +587,11 @@ public class ShaderQuickConfigScreen extends Screen {
         HeldItemOutlineSettings.setMainHandEnabled(this.mainHand);
         HeldItemOutlineSettings.setOffHandEnabled(this.offHand);
         HeldItemOutlineSettings.setBloomEnabled(this.bloom);
+        HeldItemOutlineSettings.setRuleSwitchDelayEnabled(this.ruleSwitchDelayEnabled);
         HeldItemOutlineSettings.setColorMode(this.colorMode);
+        HeldItemOutlineSettings.setAutoSampleSize(this.autoSampleSize);
+        HeldItemOutlineSettings.setAutoSampleMaxColors(this.autoSampleMaxColors);
+        HeldItemOutlineSettings.setAutoSampleSortMode(this.autoSampleSortMode);
         HeldItemOutlineSettings.setBloomResolution(this.bloomResolution);
         HeldItemOutlineSettings.setBloomMaxPasses(this.bloomMaxPasses);
         HeldItemOutlineSettings.setBloomStrength(this.bloomStrength);
@@ -487,14 +603,27 @@ public class ShaderQuickConfigScreen extends Screen {
         HeldItemOutlineSettings.setColorScrollSpeed(this.colorScrollSpeed);
         HeldItemOutlineSettings.setDepthWeight(this.depthWeight);
         HeldItemOutlineSettings.setGlowStrength(this.glowStrength);
-        HeldItemOutlineSettings.setPulseSpeed(this.pulseSpeed);
-        HeldItemOutlineSettings.setPulseAmount(this.pulseAmount);
         HeldItemOutlineSettings.setRed(this.red);
         HeldItemOutlineSettings.setGreen(this.green);
         HeldItemOutlineSettings.setBlue(this.blue);
         HeldItemOutlineSettings.setSecondaryRed(this.secondaryRed);
         HeldItemOutlineSettings.setSecondaryGreen(this.secondaryGreen);
         HeldItemOutlineSettings.setSecondaryBlue(this.secondaryBlue);
+        HeldItemRuleManager.applyState(new HeldItemRuleManager.StateSnapshot(this.ruleMode, this.whitelistEntries, this.blacklistEntries, this.customRules));
+    }
+
+    private void openRuleEditor() {
+        if (this.minecraft == null) {
+            return;
+        }
+        this.minecraft.setScreen(new HeldItemRuleConfigScreen(this,
+                new HeldItemRuleManager.StateSnapshot(this.ruleMode, this.whitelistEntries, this.blacklistEntries, this.customRules),
+                snapshot -> {
+                    this.ruleMode = snapshot.ruleMode();
+                    this.whitelistEntries = new ArrayList<>(snapshot.whitelistEntries());
+                    this.blacklistEntries = new ArrayList<>(snapshot.blacklistEntries());
+                    this.customRules = new ArrayList<>(snapshot.customRules());
+                }));
     }
 
     private void saveAndClose() {
@@ -536,12 +665,20 @@ public class ShaderQuickConfigScreen extends Screen {
         return Component.translatable("screen.itemglint.shader_config.color_mode." + mode.commandName());
     }
 
+    private Component sampleSortModeLabel(HeldItemOutlineSettings.SampleColorSortMode mode) {
+        return Component.translatable("screen.itemglint.shader_config.sample_sort_mode." + mode.commandName());
+    }
+
     private Component bloomResolutionLabel(HeldItemOutlineSettings.BloomResolution resolution) {
         return Component.translatable("screen.itemglint.shader_config.bloom_resolution." + resolution.commandName());
     }
 
     private int getFrameLeft() {
-        return this.width / 2 - (MAIN_WIDTH + PANEL_GAP + SIDEBAR_WIDTH) / 2;
+        return this.width / 2 - getFrameWidth() / 2;
+    }
+
+    private int getFrameWidth() {
+        return Math.min(MAIN_WIDTH + PANEL_GAP + SIDEBAR_WIDTH, Math.max(340, this.width - FRAME_MARGIN * 2));
     }
 
     private int getMainLeft() {
@@ -549,7 +686,11 @@ public class ShaderQuickConfigScreen extends Screen {
     }
 
     private int getMainRight() {
-        return getMainLeft() + MAIN_WIDTH;
+        return getMainLeft() + getMainPanelWidth();
+    }
+
+    private int getMainPanelWidth() {
+        return getFrameWidth() - PANEL_GAP - getSidebarWidth();
     }
 
     private int getSidebarLeft() {
@@ -557,7 +698,162 @@ public class ShaderQuickConfigScreen extends Screen {
     }
 
     private int getSidebarRight() {
-        return getSidebarLeft() + SIDEBAR_WIDTH;
+        return getSidebarLeft() + getSidebarWidth();
+    }
+
+    private int getSidebarWidth() {
+        int totalWidth = getFrameWidth();
+        int sidebarWidth = Math.min(SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, totalWidth / 4));
+        int mainWidth = totalWidth - PANEL_GAP - sidebarWidth;
+        int minimumMainWidth = 280;
+        if (mainWidth < minimumMainWidth) {
+            sidebarWidth = Math.max(MIN_SIDEBAR_WIDTH, totalWidth - PANEL_GAP - minimumMainWidth);
+        }
+        return Mth.clamp(sidebarWidth, MIN_SIDEBAR_WIDTH, SIDEBAR_WIDTH);
+    }
+
+    private int getHorizontalInset() {
+        return Mth.clamp(getMainPanelWidth() / 24, 10, 18);
+    }
+
+    private int getSidebarInset() {
+        return Mth.clamp(getSidebarWidth() / 14, 8, 12);
+    }
+
+    private int getMainContentLeft() {
+        return getMainLeft() + getHorizontalInset();
+    }
+
+    private int getMainContentRight() {
+        return getMainRight() - getHorizontalInset();
+    }
+
+    private int getMainContentWidth() {
+        return getMainContentRight() - getMainContentLeft();
+    }
+
+    private int getRowLabelWidth() {
+        return Mth.clamp(getMainContentWidth() * 2 / 5, 104, LABEL_WIDTH);
+    }
+
+    private int getRowFieldWidth() {
+        return Math.max(120, getMainContentWidth() - getRowLabelWidth());
+    }
+
+    private int getNavButtonWidth() {
+        return Math.max(72, getSidebarWidth() - getSidebarInset() * 2);
+    }
+
+    private int getColorPickerSize() {
+        int minimumControlArea = 132;
+        int available = getMainContentWidth() - COLOR_BAR_WIDTH - 28 - minimumControlArea;
+        return Mth.clamp(Math.min(COLOR_PICKER_SIZE, available), MIN_COLOR_PICKER_SIZE, COLOR_PICKER_SIZE);
+    }
+
+    private int getColorControlAreaWidth() {
+        return Math.max(120, getMainContentWidth() - getColorPickerSize() - COLOR_BAR_WIDTH - 28);
+    }
+
+    private int getColorControlLabelWidth() {
+        return Mth.clamp(getColorControlAreaWidth() / 3, 44, COLOR_CONTROL_LABEL_WIDTH);
+    }
+
+    private int getColorControlWidth() {
+        return Math.max(76, getColorControlAreaWidth() - getColorControlLabelWidth());
+    }
+
+    private int getMainContentTop() {
+        return 74;
+    }
+
+    private int getFooterButtonY() {
+        return this.height - 29;
+    }
+
+    private int getFooterButtonWidth() {
+        int buttonGap = 8;
+        return Math.max(72, Math.min(108, (getMainContentWidth() - buttonGap * 2) / 3));
+    }
+
+    private int getFooterButtonsLeft() {
+        int buttonGap = 8;
+        int buttonWidth = getFooterButtonWidth();
+        int buttonsTotalWidth = buttonWidth * 3 + buttonGap * 2;
+        return getMainContentLeft() + Math.max(0, (getMainContentWidth() - buttonsTotalWidth) / 2);
+    }
+
+    private boolean dispatchMouseClickTopmost(double mouseX, double mouseY, int button) {
+        List<? extends GuiEventListener> children = this.children();
+        for (int index = children.size() - 1; index >= 0; index--) {
+            GuiEventListener listener = children.get(index);
+            if (listener.mouseClicked(mouseX, mouseY, button)) {
+                this.setFocused(listener);
+                if (button == 0) {
+                    this.setDragging(true);
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isMouseOverFooterButtons(double mouseX, double mouseY) {
+        int buttonY = getFooterButtonY();
+        if (mouseY < buttonY || mouseY >= buttonY + 20) {
+            return false;
+        }
+        int buttonGap = 8;
+        int buttonWidth = getFooterButtonWidth();
+        int left = getFooterButtonsLeft();
+        for (int index = 0; index < 3; index++) {
+            int buttonX = left + index * (buttonWidth + buttonGap);
+            if (mouseX >= buttonX && mouseX < buttonX + buttonWidth) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isInFooterMaskArea(double mouseX, double mouseY) {
+        return mouseX >= getFrameLeft() - PANEL_PADDING - SCROLL_HORIZONTAL_PADDING
+                && mouseX < getSidebarRight() + PANEL_PADDING + SCROLL_HORIZONTAL_PADDING
+                && mouseY >= getFooterMaskTop();
+    }
+
+    private boolean isInHiddenFrameArea(double mouseX, double mouseY) {
+        return mouseX >= getFrameLeft() - PANEL_PADDING - SCROLL_HORIZONTAL_PADDING
+                && mouseX < getSidebarRight() + PANEL_PADDING + SCROLL_HORIZONTAL_PADDING
+                && (mouseY < 44 || mouseY >= getFooterMaskTop());
+    }
+
+    private int getFooterMaskTop() {
+        return this.height - 38;
+    }
+
+    private int getPageViewportBottom() {
+        return getFooterMaskTop() - 6;
+    }
+
+    private int getScrollStopY() {
+        return Math.max(44, this.height / 2);
+    }
+
+    private int getMaxPageScrollOffset() {
+        return Math.max(0, getPageContentBottom() - getScrollStopY());
+    }
+
+    private int getPageContentBottom() {
+        int top = getMainContentTop();
+        return switch (this.currentPage) {
+            case OVERVIEW -> top + 7 * ROW_HEIGHT + 20;
+            case SHAPE -> top + 3 * ROW_HEIGHT + 20;
+            case EFFECTS -> top + 9 * ROW_HEIGHT + 20;
+            case COLORS -> top + 72 + Math.max(getColorPickerSize(), 34 + ROW_HEIGHT * 2 + 20);
+        };
+    }
+
+    private boolean isMouseOverScrollableArea(double mouseX, double mouseY) {
+        return mouseX >= getMainLeft() && mouseX < getSidebarRight() && mouseY >= 44 && mouseY < getPageViewportBottom();
     }
 
     private float getActiveRed() {
@@ -762,19 +1058,41 @@ public class ShaderQuickConfigScreen extends Screen {
         }
     }
 
-    private record SettingsSnapshot(boolean featureEnabled, boolean mainHand, boolean offHand, boolean bloom,
-                                    HeldItemOutlineSettings.ColorMode colorMode, HeldItemOutlineSettings.BloomResolution bloomResolution,
+    private static final class FooterMaskWidget extends AbstractWidget {
+        private FooterMaskWidget(int x, int y, int width, int height) {
+            super(x, y, width, height, Component.empty());
+        }
+
+        @Override
+        protected void renderWidget(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+            graphics.fill(getX(), getY(), getX() + this.width, getY() + this.height, 0xD010131A);
+        }
+
+        @Override
+        protected void updateWidgetNarration(NarrationElementOutput output) {
+        }
+    }
+
+    private record SettingsSnapshot(boolean featureEnabled, boolean mainHand, boolean offHand, boolean bloom, boolean ruleSwitchDelayEnabled,
+                                    HeldItemOutlineSettings.ColorMode colorMode, int autoSampleSize, int autoSampleMaxColors,
+                                    HeldItemOutlineSettings.SampleColorSortMode autoSampleSortMode, HeldItemOutlineSettings.BloomResolution bloomResolution,
                                     int bloomMaxPasses, float bloomStrength, float bloomRadius, float widthValue, float softness,
                                     float alphaThreshold, float opacity, float colorScrollSpeed, float depthWeight,
-                                    float glowStrength, float pulseSpeed, float pulseAmount,
-                                    float red, float green, float blue, float secondaryRed, float secondaryGreen, float secondaryBlue) {
+                                    float glowStrength,
+                                    float red, float green, float blue, float secondaryRed, float secondaryGreen, float secondaryBlue,
+                                    HeldItemRuleManager.RuleMode ruleMode, List<String> whitelistEntries,
+                                    List<String> blacklistEntries, List<HeldItemRuleManager.CustomRule> customRules) {
         private static SettingsSnapshot capture() {
             return new SettingsSnapshot(
                     ShaderFeatureManager.isEnabled(ShaderFeature.HELD_ITEM_OUTLINE),
                     HeldItemOutlineSettings.isMainHandEnabled(),
                     HeldItemOutlineSettings.isOffHandEnabled(),
                     HeldItemOutlineSettings.isBloomEnabled(),
+                    HeldItemOutlineSettings.isRuleSwitchDelayEnabled(),
                     HeldItemOutlineSettings.getColorMode(),
+                    HeldItemOutlineSettings.getAutoSampleSize(),
+                    HeldItemOutlineSettings.getAutoSampleMaxColors(),
+                    HeldItemOutlineSettings.getAutoSampleSortMode(),
                     HeldItemOutlineSettings.getBloomResolution(),
                     HeldItemOutlineSettings.getBloomMaxPasses(),
                     HeldItemOutlineSettings.getBloomStrength(),
@@ -786,14 +1104,16 @@ public class ShaderQuickConfigScreen extends Screen {
                     HeldItemOutlineSettings.getColorScrollSpeed(),
                     HeldItemOutlineSettings.getDepthWeight(),
                     HeldItemOutlineSettings.getGlowStrength(),
-                    HeldItemOutlineSettings.getPulseSpeed(),
-                    HeldItemOutlineSettings.getPulseAmount(),
                     HeldItemOutlineSettings.getRed(),
                     HeldItemOutlineSettings.getGreen(),
                     HeldItemOutlineSettings.getBlue(),
                     HeldItemOutlineSettings.getSecondaryRed(),
                     HeldItemOutlineSettings.getSecondaryGreen(),
-                    HeldItemOutlineSettings.getSecondaryBlue()
+                    HeldItemOutlineSettings.getSecondaryBlue(),
+                    HeldItemRuleManager.getRuleMode(),
+                    HeldItemRuleManager.getWhitelistEntries(),
+                    HeldItemRuleManager.getBlacklistEntries(),
+                    HeldItemRuleManager.getCustomRules()
             );
         }
 
@@ -802,7 +1122,11 @@ public class ShaderQuickConfigScreen extends Screen {
             HeldItemOutlineSettings.setMainHandEnabled(this.mainHand);
             HeldItemOutlineSettings.setOffHandEnabled(this.offHand);
             HeldItemOutlineSettings.setBloomEnabled(this.bloom);
+            HeldItemOutlineSettings.setRuleSwitchDelayEnabled(this.ruleSwitchDelayEnabled);
             HeldItemOutlineSettings.setColorMode(this.colorMode);
+            HeldItemOutlineSettings.setAutoSampleSize(this.autoSampleSize);
+            HeldItemOutlineSettings.setAutoSampleMaxColors(this.autoSampleMaxColors);
+            HeldItemOutlineSettings.setAutoSampleSortMode(this.autoSampleSortMode);
             HeldItemOutlineSettings.setBloomResolution(this.bloomResolution);
             HeldItemOutlineSettings.setBloomMaxPasses(this.bloomMaxPasses);
             HeldItemOutlineSettings.setBloomStrength(this.bloomStrength);
@@ -814,14 +1138,13 @@ public class ShaderQuickConfigScreen extends Screen {
             HeldItemOutlineSettings.setColorScrollSpeed(this.colorScrollSpeed);
             HeldItemOutlineSettings.setDepthWeight(this.depthWeight);
             HeldItemOutlineSettings.setGlowStrength(this.glowStrength);
-            HeldItemOutlineSettings.setPulseSpeed(this.pulseSpeed);
-            HeldItemOutlineSettings.setPulseAmount(this.pulseAmount);
             HeldItemOutlineSettings.setRed(this.red);
             HeldItemOutlineSettings.setGreen(this.green);
             HeldItemOutlineSettings.setBlue(this.blue);
             HeldItemOutlineSettings.setSecondaryRed(this.secondaryRed);
             HeldItemOutlineSettings.setSecondaryGreen(this.secondaryGreen);
             HeldItemOutlineSettings.setSecondaryBlue(this.secondaryBlue);
+            HeldItemRuleManager.applyState(new HeldItemRuleManager.StateSnapshot(this.ruleMode, this.whitelistEntries, this.blacklistEntries, this.customRules));
         }
     }
 

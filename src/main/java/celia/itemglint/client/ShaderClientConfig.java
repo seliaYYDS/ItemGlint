@@ -10,6 +10,8 @@ import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.config.ModConfig;
 import net.minecraftforge.fml.event.config.ModConfigEvent;
 
+import java.util.List;
+
 @Mod.EventBusSubscriber(modid = ItemGlint.MODID, bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
 public final class ShaderClientConfig {
     private static final Object CONFIG_LOCK = new Object();
@@ -20,7 +22,11 @@ public final class ShaderClientConfig {
     private static final ForgeConfigSpec.BooleanValue HELD_ITEM_MAIN_HAND;
     private static final ForgeConfigSpec.BooleanValue HELD_ITEM_OFF_HAND;
     private static final ForgeConfigSpec.BooleanValue HELD_ITEM_BLOOM;
+    private static final ForgeConfigSpec.BooleanValue HELD_ITEM_RULE_SWITCH_DELAY_ENABLED;
     private static final ForgeConfigSpec.EnumValue<HeldItemOutlineSettings.ColorMode> HELD_ITEM_COLOR_MODE;
+    private static final ForgeConfigSpec.IntValue HELD_ITEM_AUTO_SAMPLE_SIZE;
+    private static final ForgeConfigSpec.IntValue HELD_ITEM_AUTO_SAMPLE_MAX_COLORS;
+    private static final ForgeConfigSpec.EnumValue<HeldItemOutlineSettings.SampleColorSortMode> HELD_ITEM_AUTO_SAMPLE_SORT_MODE;
     private static final ForgeConfigSpec.EnumValue<HeldItemOutlineSettings.BloomResolution> HELD_ITEM_BLOOM_RESOLUTION;
     private static final ForgeConfigSpec.IntValue HELD_ITEM_BLOOM_MAX_PASSES;
     private static final ForgeConfigSpec.DoubleValue HELD_ITEM_BLOOM_STRENGTH;
@@ -38,8 +44,10 @@ public final class ShaderClientConfig {
     private static final ForgeConfigSpec.DoubleValue HELD_ITEM_COLOR_SCROLL_SPEED;
     private static final ForgeConfigSpec.DoubleValue HELD_ITEM_DEPTH_WEIGHT;
     private static final ForgeConfigSpec.DoubleValue HELD_ITEM_GLOW_STRENGTH;
-    private static final ForgeConfigSpec.DoubleValue HELD_ITEM_PULSE_SPEED;
-    private static final ForgeConfigSpec.DoubleValue HELD_ITEM_PULSE_AMOUNT;
+    private static final ForgeConfigSpec.EnumValue<HeldItemRuleManager.RuleMode> HELD_ITEM_RULE_MODE;
+    private static final ForgeConfigSpec.ConfigValue<List<? extends String>> HELD_ITEM_WHITELIST;
+    private static final ForgeConfigSpec.ConfigValue<List<? extends String>> HELD_ITEM_BLACKLIST;
+    private static final ForgeConfigSpec.ConfigValue<List<? extends String>> HELD_ITEM_CUSTOM_RULES;
 
     private static boolean suppressOwnedConfigReload;
 
@@ -56,7 +64,11 @@ public final class ShaderClientConfig {
         HELD_ITEM_MAIN_HAND = builder.comment("Render the outline for the main-hand item.").define("main_hand", HeldItemOutlineSettings.DEFAULT_MAIN_HAND);
         HELD_ITEM_OFF_HAND = builder.comment("Render the outline for the off-hand item.").define("off_hand", HeldItemOutlineSettings.DEFAULT_OFF_HAND);
         HELD_ITEM_BLOOM = builder.comment("Render bloom around the outline.").define("bloom", HeldItemOutlineSettings.DEFAULT_BLOOM);
+        HELD_ITEM_RULE_SWITCH_DELAY_ENABLED = builder.comment("Enable the 0.2s delay when switching between rule results in non-all modes.").define("rule_switch_delay_enabled", HeldItemOutlineSettings.DEFAULT_RULE_SWITCH_DELAY_ENABLED);
         HELD_ITEM_COLOR_MODE = builder.comment("Color mode for the outline and bloom.").defineEnum("color_mode", HeldItemOutlineSettings.DEFAULT_COLOR_MODE);
+        HELD_ITEM_AUTO_SAMPLE_SIZE = builder.comment("Pixel step used for automatic item color sampling.").defineInRange("auto_sample_size", HeldItemOutlineSettings.DEFAULT_AUTO_SAMPLE_SIZE, HeldItemOutlineSettings.MIN_AUTO_SAMPLE_SIZE, HeldItemOutlineSettings.MAX_AUTO_SAMPLE_SIZE);
+        HELD_ITEM_AUTO_SAMPLE_MAX_COLORS = builder.comment("Maximum sampled palette size for automatic item color mode.").defineInRange("auto_sample_max_colors", HeldItemOutlineSettings.DEFAULT_AUTO_SAMPLE_MAX_COLORS, HeldItemOutlineSettings.MIN_AUTO_SAMPLE_MAX_COLORS, HeldItemOutlineSettings.MAX_AUTO_SAMPLE_MAX_COLORS);
+        HELD_ITEM_AUTO_SAMPLE_SORT_MODE = builder.comment("Sorting mode used for the sampled palette.").defineEnum("auto_sample_sort_mode", HeldItemOutlineSettings.DEFAULT_AUTO_SAMPLE_SORT_MODE);
         HELD_ITEM_BLOOM_RESOLUTION = builder.comment("Internal bloom render resolution.").defineEnum("bloom_resolution", HeldItemOutlineSettings.DEFAULT_BLOOM_RESOLUTION);
         HELD_ITEM_BLOOM_MAX_PASSES = builder.comment("Maximum number of blur passes.").defineInRange("bloom_max_passes", HeldItemOutlineSettings.DEFAULT_BLOOM_MAX_PASSES, HeldItemOutlineSettings.MIN_BLOOM_MAX_PASSES, HeldItemOutlineSettings.MAX_BLOOM_MAX_PASSES);
         HELD_ITEM_BLOOM_STRENGTH = builder.comment("Bloom strength multiplier.").defineInRange("bloom_strength", (double) HeldItemOutlineSettings.DEFAULT_BLOOM_STRENGTH, HeldItemOutlineSettings.MIN_BLOOM_STRENGTH, HeldItemOutlineSettings.MAX_BLOOM_STRENGTH);
@@ -74,8 +86,17 @@ public final class ShaderClientConfig {
         HELD_ITEM_COLOR_SCROLL_SPEED = builder.comment("Color scroll speed.").defineInRange("color_scroll_speed", (double) HeldItemOutlineSettings.DEFAULT_COLOR_SCROLL_SPEED, HeldItemOutlineSettings.MIN_COLOR_SCROLL_SPEED, HeldItemOutlineSettings.MAX_COLOR_SCROLL_SPEED);
         HELD_ITEM_DEPTH_WEIGHT = builder.comment("Depth weighting applied to the outline.").defineInRange("depth_weight", (double) HeldItemOutlineSettings.DEFAULT_DEPTH_WEIGHT, HeldItemOutlineSettings.MIN_DEPTH_WEIGHT, HeldItemOutlineSettings.MAX_DEPTH_WEIGHT);
         HELD_ITEM_GLOW_STRENGTH = builder.comment("Extra glow strength.").defineInRange("glow_strength", (double) HeldItemOutlineSettings.DEFAULT_GLOW_STRENGTH, HeldItemOutlineSettings.MIN_GLOW_STRENGTH, HeldItemOutlineSettings.MAX_GLOW_STRENGTH);
-        HELD_ITEM_PULSE_SPEED = builder.comment("Pulse animation speed.").defineInRange("pulse_speed", (double) HeldItemOutlineSettings.DEFAULT_PULSE_SPEED, HeldItemOutlineSettings.MIN_PULSE_SPEED, HeldItemOutlineSettings.MAX_PULSE_SPEED);
-        HELD_ITEM_PULSE_AMOUNT = builder.comment("Pulse animation amount.").defineInRange("pulse_amount", (double) HeldItemOutlineSettings.DEFAULT_PULSE_AMOUNT, HeldItemOutlineSettings.MIN_PULSE_AMOUNT, HeldItemOutlineSettings.MAX_PULSE_AMOUNT);
+        builder.pop();
+
+        builder.comment("Held item global rule system.").push("held_item_rules");
+        HELD_ITEM_RULE_MODE = builder.comment("Controls whether effects apply to all items, only a whitelist, everything except a blacklist, or custom NBT-based rules.")
+                .defineEnum("mode", HeldItemRuleManager.RuleMode.ALL);
+        HELD_ITEM_WHITELIST = builder.comment("Whitelist item selectors. Use minecraft:item_id, #namespace:tag, or @modid.")
+                .defineListAllowEmpty(List.of("whitelist"), List::of, value -> value instanceof String);
+        HELD_ITEM_BLACKLIST = builder.comment("Blacklist item selectors. Use minecraft:item_id, #namespace:tag, or @modid.")
+                .defineListAllowEmpty(List.of("blacklist"), List::of, value -> value instanceof String);
+        HELD_ITEM_CUSTOM_RULES = builder.comment("Custom rule JSON entries with name, priority, filters, and effectParams.")
+                .defineListAllowEmpty(List.of("custom_rules"), List::of, value -> value instanceof String);
         builder.pop();
 
         SPEC = builder.build();
@@ -147,7 +168,11 @@ public final class ShaderClientConfig {
         HeldItemOutlineSettings.setMainHandEnabled(HELD_ITEM_MAIN_HAND.get());
         HeldItemOutlineSettings.setOffHandEnabled(HELD_ITEM_OFF_HAND.get());
         HeldItemOutlineSettings.setBloomEnabled(HELD_ITEM_BLOOM.get());
+        HeldItemOutlineSettings.setRuleSwitchDelayEnabled(HELD_ITEM_RULE_SWITCH_DELAY_ENABLED.get());
         HeldItemOutlineSettings.setColorMode(HELD_ITEM_COLOR_MODE.get());
+        HeldItemOutlineSettings.setAutoSampleSize(HELD_ITEM_AUTO_SAMPLE_SIZE.get());
+        HeldItemOutlineSettings.setAutoSampleMaxColors(HELD_ITEM_AUTO_SAMPLE_MAX_COLORS.get());
+        HeldItemOutlineSettings.setAutoSampleSortMode(HELD_ITEM_AUTO_SAMPLE_SORT_MODE.get());
         HeldItemOutlineSettings.setBloomResolution(HELD_ITEM_BLOOM_RESOLUTION.get());
         HeldItemOutlineSettings.setBloomMaxPasses(HELD_ITEM_BLOOM_MAX_PASSES.get());
         HeldItemOutlineSettings.setBloomStrength(HELD_ITEM_BLOOM_STRENGTH.get().floatValue());
@@ -165,15 +190,23 @@ public final class ShaderClientConfig {
         HeldItemOutlineSettings.setColorScrollSpeed(HELD_ITEM_COLOR_SCROLL_SPEED.get().floatValue());
         HeldItemOutlineSettings.setDepthWeight(HELD_ITEM_DEPTH_WEIGHT.get().floatValue());
         HeldItemOutlineSettings.setGlowStrength(HELD_ITEM_GLOW_STRENGTH.get().floatValue());
-        HeldItemOutlineSettings.setPulseSpeed(HELD_ITEM_PULSE_SPEED.get().floatValue());
-        HeldItemOutlineSettings.setPulseAmount(HELD_ITEM_PULSE_AMOUNT.get().floatValue());
+        HeldItemRuleManager.setRuleMode(HELD_ITEM_RULE_MODE.get());
+        HeldItemRuleManager.setWhitelistEntries(castStringList(HELD_ITEM_WHITELIST.get()));
+        HeldItemRuleManager.setBlacklistEntries(castStringList(HELD_ITEM_BLACKLIST.get()));
+        HeldItemRuleManager.setCustomRules(castStringList(HELD_ITEM_CUSTOM_RULES.get()).stream()
+                .map(HeldItemRuleManager::deserializeCustomRule)
+                .toList());
     }
 
     private static void writeHeldItemOutlineSettings() {
         HELD_ITEM_MAIN_HAND.set(HeldItemOutlineSettings.isMainHandEnabled());
         HELD_ITEM_OFF_HAND.set(HeldItemOutlineSettings.isOffHandEnabled());
         HELD_ITEM_BLOOM.set(HeldItemOutlineSettings.isBloomEnabled());
+        HELD_ITEM_RULE_SWITCH_DELAY_ENABLED.set(HeldItemOutlineSettings.isRuleSwitchDelayEnabled());
         HELD_ITEM_COLOR_MODE.set(HeldItemOutlineSettings.getColorMode());
+        HELD_ITEM_AUTO_SAMPLE_SIZE.set(HeldItemOutlineSettings.getAutoSampleSize());
+        HELD_ITEM_AUTO_SAMPLE_MAX_COLORS.set(HeldItemOutlineSettings.getAutoSampleMaxColors());
+        HELD_ITEM_AUTO_SAMPLE_SORT_MODE.set(HeldItemOutlineSettings.getAutoSampleSortMode());
         HELD_ITEM_BLOOM_RESOLUTION.set(HeldItemOutlineSettings.getBloomResolution());
         HELD_ITEM_BLOOM_MAX_PASSES.set(HeldItemOutlineSettings.getBloomMaxPasses());
         HELD_ITEM_BLOOM_STRENGTH.set((double) HeldItemOutlineSettings.getBloomStrength());
@@ -191,8 +224,14 @@ public final class ShaderClientConfig {
         HELD_ITEM_COLOR_SCROLL_SPEED.set((double) HeldItemOutlineSettings.getColorScrollSpeed());
         HELD_ITEM_DEPTH_WEIGHT.set((double) HeldItemOutlineSettings.getDepthWeight());
         HELD_ITEM_GLOW_STRENGTH.set((double) HeldItemOutlineSettings.getGlowStrength());
-        HELD_ITEM_PULSE_SPEED.set((double) HeldItemOutlineSettings.getPulseSpeed());
-        HELD_ITEM_PULSE_AMOUNT.set((double) HeldItemOutlineSettings.getPulseAmount());
+        HELD_ITEM_RULE_MODE.set(HeldItemRuleManager.getRuleMode());
+        HELD_ITEM_WHITELIST.set(new java.util.ArrayList<>(HeldItemRuleManager.getWhitelistEntries()));
+        HELD_ITEM_BLACKLIST.set(new java.util.ArrayList<>(HeldItemRuleManager.getBlacklistEntries()));
+        java.util.ArrayList<String> serializedRules = new java.util.ArrayList<>();
+        for (HeldItemRuleManager.CustomRule rule : HeldItemRuleManager.getCustomRules()) {
+            serializedRules.add(HeldItemRuleManager.serializeCustomRule(rule));
+        }
+        HELD_ITEM_CUSTOM_RULES.set(serializedRules);
     }
 
     private static void saveSpecLocked() {
@@ -202,5 +241,15 @@ public final class ShaderClientConfig {
         } finally {
             suppressOwnedConfigReload = false;
         }
+    }
+
+    private static java.util.List<String> castStringList(List<? extends String> values) {
+        if (values == null || values.isEmpty()) {
+            return java.util.List.of();
+        }
+        return values.stream()
+                .filter(java.util.Objects::nonNull)
+                .map(String::valueOf)
+                .toList();
     }
 }

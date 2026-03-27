@@ -11,6 +11,7 @@ import net.minecraft.client.renderer.LightTexture;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderBuffers;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
+import net.minecraft.world.InteractionHand;
 import org.joml.Matrix3f;
 import org.joml.Matrix4f;
 import org.spongepowered.asm.mixin.Final;
@@ -111,36 +112,39 @@ public abstract class GameRendererOculusMixin {
             return;
         }
 
-        if (!HeldItemOutlineRenderer.beginCapture(minecraft, minecraft.getMainRenderTarget())) {
-            HeldItemOutlineRenderer.debugCompat(minecraft, "GameRendererOculusMixin beginCapture returned false");
-            return;
-        }
-
         MultiBufferSource.BufferSource captureBufferSource = HeldItemOutlineCompat.isEmbeddiumLoaded()
                 ? HeldItemOutlineRenderer.getEmbeddiumCaptureBufferSource()
                 : primaryBufferSource;
         EntityRenderDispatcher entityRenderDispatcher = minecraft.getEntityRenderDispatcher();
         int packedLight = entityRenderDispatcher.getPackedLightCoords(player, partialTick);
 
-        lightTexture.turnOnLightLayer();
-        try {
-            if (itemglint$oculusPose != null) {
-                poseStack.last().pose().set(itemglint$oculusPose);
+        for (HeldItemOutlineRenderer.HandEffectTarget target : HeldItemOutlineRenderer.getRenderableHands(player)) {
+            InteractionHand hand = target.hand();
+            if (!HeldItemOutlineRenderer.beginCapture(minecraft, minecraft.getMainRenderTarget(), hand)) {
+                HeldItemOutlineRenderer.debugCompat(minecraft, "GameRendererOculusMixin beginCapture returned false for " + hand);
+                continue;
             }
-            if (itemglint$oculusNormal != null) {
-                poseStack.last().normal().set(itemglint$oculusNormal);
-            }
-            itemInHandRenderer.renderHandsWithItems(partialTick, poseStack, captureBufferSource, player, packedLight);
-            captureBufferSource.endBatch();
-            HeldItemOutlineRenderer.debugCompat(minecraft, "GameRendererOculusMixin finished capture buffer batch");
-        } finally {
-            HeldItemOutlineRenderer.endCapture();
-            lightTexture.turnOffLightLayer();
-            itemglint$oculusPose = null;
-            itemglint$oculusNormal = null;
-        }
 
-        HeldItemOutlineRenderer.composite(minecraft, minecraft.getMainRenderTarget());
+            lightTexture.turnOnLightLayer();
+            try {
+                if (itemglint$oculusPose != null) {
+                    poseStack.last().pose().set(itemglint$oculusPose);
+                }
+                if (itemglint$oculusNormal != null) {
+                    poseStack.last().normal().set(itemglint$oculusNormal);
+                }
+                itemInHandRenderer.renderHandsWithItems(partialTick, poseStack, captureBufferSource, player, packedLight);
+                captureBufferSource.endBatch();
+                HeldItemOutlineRenderer.debugCompat(minecraft, "GameRendererOculusMixin finished capture buffer batch for " + hand);
+            } finally {
+                HeldItemOutlineRenderer.endCapture();
+                lightTexture.turnOffLightLayer();
+            }
+
+            HeldItemOutlineRenderer.composite(minecraft, minecraft.getMainRenderTarget(), hand, target.profile(), target.sampledColors());
+        }
+        itemglint$oculusPose = null;
+        itemglint$oculusNormal = null;
     }
 
     @Inject(method = "renderLevel",

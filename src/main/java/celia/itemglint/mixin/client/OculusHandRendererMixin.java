@@ -16,8 +16,7 @@ public abstract class OculusHandRendererMixin {
     private void itemglint$beginEmbeddiumSolidCapture(CallbackInfo ci) {
         Minecraft minecraft = Minecraft.getInstance();
         if (HeldItemOutlineCompat.shouldUseEmbeddiumOculusPipeline(minecraft)) {
-            HeldItemOutlineRenderer.debugCompat(minecraft, "OculusHandRendererMixin begin solid capture");
-            HeldItemOutlineRenderer.beginEmbeddiumCompatCapture(minecraft, minecraft.getMainRenderTarget());
+            HeldItemOutlineRenderer.debugCompat(minecraft, "OculusHandRendererMixin solid hook observed");
         }
     }
 
@@ -31,8 +30,7 @@ public abstract class OculusHandRendererMixin {
     private void itemglint$beginEmbeddiumTranslucentCapture(CallbackInfo ci) {
         Minecraft minecraft = Minecraft.getInstance();
         if (HeldItemOutlineCompat.shouldUseEmbeddiumOculusPipeline(minecraft)) {
-            HeldItemOutlineRenderer.debugCompat(minecraft, "OculusHandRendererMixin begin translucent capture");
-            HeldItemOutlineRenderer.beginEmbeddiumCompatCapture(minecraft, minecraft.getMainRenderTarget());
+            HeldItemOutlineRenderer.debugCompat(minecraft, "OculusHandRendererMixin translucent hook observed");
         }
     }
 

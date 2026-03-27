@@ -10,10 +10,14 @@ import java.util.Locale;
 
 public final class HeldItemOutlineSettings {
     static final ColorMode DEFAULT_COLOR_MODE = ColorMode.SINGLE;
+    static final int DEFAULT_AUTO_SAMPLE_SIZE = 2;
+    static final int DEFAULT_AUTO_SAMPLE_MAX_COLORS = 4;
+    static final SampleColorSortMode DEFAULT_AUTO_SAMPLE_SORT_MODE = SampleColorSortMode.WEIGHT;
     static final BloomResolution DEFAULT_BLOOM_RESOLUTION = BloomResolution.HALF;
     static final boolean DEFAULT_MAIN_HAND = true;
     static final boolean DEFAULT_OFF_HAND = true;
     static final boolean DEFAULT_BLOOM = true;
+    static final boolean DEFAULT_RULE_SWITCH_DELAY_ENABLED = true;
     static final int DEFAULT_BLOOM_MAX_PASSES = 4;
     static final float DEFAULT_BLOOM_STRENGTH = 1.00F;
     static final float DEFAULT_BLOOM_RADIUS = 1.00F;
@@ -30,8 +34,6 @@ public final class HeldItemOutlineSettings {
     static final float DEFAULT_COLOR_SCROLL_SPEED = 1.00F;
     static final float DEFAULT_DEPTH_WEIGHT = 1.15F;
     static final float DEFAULT_GLOW_STRENGTH = 0.55F;
-    static final float DEFAULT_PULSE_SPEED = 1.75F;
-    static final float DEFAULT_PULSE_AMOUNT = 0.08F;
 
     static final float MIN_WIDTH = 0.25F;
     static final float MAX_WIDTH = 8.00F;
@@ -49,22 +51,26 @@ public final class HeldItemOutlineSettings {
     static final float MAX_DEPTH_WEIGHT = 4.00F;
     static final float MIN_GLOW_STRENGTH = 0.00F;
     static final float MAX_GLOW_STRENGTH = 2.00F;
-    static final float MIN_PULSE_SPEED = 0.00F;
-    static final float MAX_PULSE_SPEED = 10.00F;
-    static final float MIN_PULSE_AMOUNT = 0.00F;
-    static final float MAX_PULSE_AMOUNT = 1.00F;
     static final float MIN_BLOOM_STRENGTH = 0.00F;
     static final float MAX_BLOOM_STRENGTH = 8.00F;
     static final float MIN_BLOOM_RADIUS = 0.25F;
     static final float MAX_BLOOM_RADIUS = 12.00F;
     static final int MIN_BLOOM_MAX_PASSES = 1;
     static final int MAX_BLOOM_MAX_PASSES = 6;
+    static final int MIN_AUTO_SAMPLE_SIZE = 1;
+    static final int MAX_AUTO_SAMPLE_SIZE = 8;
+    static final int MIN_AUTO_SAMPLE_MAX_COLORS = 1;
+    static final int MAX_AUTO_SAMPLE_MAX_COLORS = 8;
 
     private static ColorMode colorMode = DEFAULT_COLOR_MODE;
+    private static int autoSampleSize = DEFAULT_AUTO_SAMPLE_SIZE;
+    private static int autoSampleMaxColors = DEFAULT_AUTO_SAMPLE_MAX_COLORS;
+    private static SampleColorSortMode autoSampleSortMode = DEFAULT_AUTO_SAMPLE_SORT_MODE;
     private static BloomResolution bloomResolution = DEFAULT_BLOOM_RESOLUTION;
     private static boolean mainHand = DEFAULT_MAIN_HAND;
     private static boolean offHand = DEFAULT_OFF_HAND;
     private static boolean bloom = DEFAULT_BLOOM;
+    private static boolean ruleSwitchDelayEnabled = DEFAULT_RULE_SWITCH_DELAY_ENABLED;
     private static int bloomMaxPasses = DEFAULT_BLOOM_MAX_PASSES;
     private static float bloomStrength = DEFAULT_BLOOM_STRENGTH;
     private static float bloomRadius = DEFAULT_BLOOM_RADIUS;
@@ -81,8 +87,6 @@ public final class HeldItemOutlineSettings {
     private static float colorScrollSpeed = DEFAULT_COLOR_SCROLL_SPEED;
     private static float depthWeight = DEFAULT_DEPTH_WEIGHT;
     private static float glowStrength = DEFAULT_GLOW_STRENGTH;
-    private static float pulseSpeed = DEFAULT_PULSE_SPEED;
-    private static float pulseAmount = DEFAULT_PULSE_AMOUNT;
 
     private HeldItemOutlineSettings() {
     }
@@ -98,6 +102,33 @@ public final class HeldItemOutlineSettings {
 
     public static BloomResolution getBloomResolution() {
         return bloomResolution;
+    }
+
+    public static int getAutoSampleSize() {
+        return autoSampleSize;
+    }
+
+    public static int setAutoSampleSize(int value) {
+        autoSampleSize = Mth.clamp(value, MIN_AUTO_SAMPLE_SIZE, MAX_AUTO_SAMPLE_SIZE);
+        return autoSampleSize;
+    }
+
+    public static int getAutoSampleMaxColors() {
+        return autoSampleMaxColors;
+    }
+
+    public static int setAutoSampleMaxColors(int value) {
+        autoSampleMaxColors = Mth.clamp(value, MIN_AUTO_SAMPLE_MAX_COLORS, MAX_AUTO_SAMPLE_MAX_COLORS);
+        return autoSampleMaxColors;
+    }
+
+    public static SampleColorSortMode getAutoSampleSortMode() {
+        return autoSampleSortMode;
+    }
+
+    public static SampleColorSortMode setAutoSampleSortMode(SampleColorSortMode value) {
+        autoSampleSortMode = value == null ? DEFAULT_AUTO_SAMPLE_SORT_MODE : value;
+        return autoSampleSortMode;
     }
 
     public static BloomResolution setBloomResolution(BloomResolution resolution) {
@@ -141,6 +172,15 @@ public final class HeldItemOutlineSettings {
     public static boolean setBloomEnabled(boolean enabled) {
         bloom = enabled;
         return bloom;
+    }
+
+    public static boolean isRuleSwitchDelayEnabled() {
+        return ruleSwitchDelayEnabled;
+    }
+
+    public static boolean setRuleSwitchDelayEnabled(boolean enabled) {
+        ruleSwitchDelayEnabled = enabled;
+        return ruleSwitchDelayEnabled;
     }
 
     public static int getBloomMaxPasses() {
@@ -269,10 +309,6 @@ public final class HeldItemOutlineSettings {
         return colorScrollSpeed;
     }
 
-    public static float getPulseSpeed() {
-        return pulseSpeed;
-    }
-
     public static float getDepthWeight() {
         return depthWeight;
     }
@@ -291,26 +327,16 @@ public final class HeldItemOutlineSettings {
         return glowStrength;
     }
 
-    public static float setPulseSpeed(float value) {
-        pulseSpeed = clamp(value, MIN_PULSE_SPEED, MAX_PULSE_SPEED);
-        return pulseSpeed;
-    }
-
-    public static float getPulseAmount() {
-        return pulseAmount;
-    }
-
-    public static float setPulseAmount(float value) {
-        pulseAmount = clamp(value, MIN_PULSE_AMOUNT, MAX_PULSE_AMOUNT);
-        return pulseAmount;
-    }
-
     public static void reset() {
         colorMode = DEFAULT_COLOR_MODE;
+        autoSampleSize = DEFAULT_AUTO_SAMPLE_SIZE;
+        autoSampleMaxColors = DEFAULT_AUTO_SAMPLE_MAX_COLORS;
+        autoSampleSortMode = DEFAULT_AUTO_SAMPLE_SORT_MODE;
         bloomResolution = DEFAULT_BLOOM_RESOLUTION;
         mainHand = DEFAULT_MAIN_HAND;
         offHand = DEFAULT_OFF_HAND;
         bloom = DEFAULT_BLOOM;
+        ruleSwitchDelayEnabled = DEFAULT_RULE_SWITCH_DELAY_ENABLED;
         bloomMaxPasses = DEFAULT_BLOOM_MAX_PASSES;
         bloomStrength = DEFAULT_BLOOM_STRENGTH;
         bloomRadius = DEFAULT_BLOOM_RADIUS;
@@ -327,8 +353,6 @@ public final class HeldItemOutlineSettings {
         colorScrollSpeed = DEFAULT_COLOR_SCROLL_SPEED;
         depthWeight = DEFAULT_DEPTH_WEIGHT;
         glowStrength = DEFAULT_GLOW_STRENGTH;
-        pulseSpeed = DEFAULT_PULSE_SPEED;
-        pulseAmount = DEFAULT_PULSE_AMOUNT;
     }
 
     public static Component describe() {
@@ -338,8 +362,12 @@ public final class HeldItemOutlineSettings {
                         bloomStrength, bloomRadius, width, softness, alphaThreshold, opacity))
                 .withStyle(ChatFormatting.AQUA);
         settings.append(Component.literal(String.format(Locale.ROOT,
-                                ", color=(%.2f, %.2f, %.2f), secondary=(%.2f, %.2f, %.2f), scroll=%.2f, depth=%.2f, glow=%.2f, pulse=(%.2f, %.2f)",
-                                red, green, blue, secondaryRed, secondaryGreen, secondaryBlue, colorScrollSpeed, depthWeight, glowStrength, pulseSpeed, pulseAmount))
+                                ", switch_delay=%s, sample_size=%d, sample_colors=%d, sample_sort=%s",
+                                ruleSwitchDelayEnabled, autoSampleSize, autoSampleMaxColors, autoSampleSortMode.commandName()))
+                        .withStyle(ChatFormatting.DARK_AQUA));
+        settings.append(Component.literal(String.format(Locale.ROOT,
+                                ", color=(%.2f, %.2f, %.2f), secondary=(%.2f, %.2f, %.2f), scroll=%.2f, depth=%.2f, glow=%.2f",
+                                red, green, blue, secondaryRed, secondaryGreen, secondaryBlue, colorScrollSpeed, depthWeight, glowStrength))
                         .withStyle(ChatFormatting.DARK_AQUA));
         return settings;
     }
@@ -351,7 +379,8 @@ public final class HeldItemOutlineSettings {
     public enum ColorMode {
         SINGLE("single", 0.0F),
         DUAL_SCROLL("dual_scroll", 1.0F),
-        RAINBOW_FLOW("rainbow_flow", 2.0F);
+        RAINBOW_FLOW("rainbow_flow", 2.0F),
+        AUTO_SAMPLE_SCROLL("auto_sample_scroll", 3.0F);
 
         private final String commandName;
         private final float shaderValue;
@@ -375,6 +404,34 @@ public final class HeldItemOutlineSettings {
             }
 
             for (ColorMode mode : values()) {
+                if (mode.commandName.equalsIgnoreCase(name)) {
+                    return mode;
+                }
+            }
+            return null;
+        }
+    }
+
+    public enum SampleColorSortMode {
+        WEIGHT("weight"),
+        HUE_SATURATION("hue_saturation");
+
+        private final String commandName;
+
+        SampleColorSortMode(String commandName) {
+            this.commandName = commandName;
+        }
+
+        public String commandName() {
+            return this.commandName;
+        }
+
+        public static SampleColorSortMode byName(String name) {
+            if (name == null) {
+                return null;
+            }
+
+            for (SampleColorSortMode mode : values()) {
                 if (mode.commandName.equalsIgnoreCase(name)) {
                     return mode;
                 }
