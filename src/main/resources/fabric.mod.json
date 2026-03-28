@@ -1,0 +1,37 @@
+{
+	"schemaVersion": 1,
+	"id": "${mod_id}",
+	"version": "${version}",
+	"name": "${mod_name}",
+	"description": "${mod_description}",
+	"authors": [
+		"${mod_author}"
+	],
+	"license": "${mod_license}",
+	"icon": "assets/${mod_id}/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"main": [
+			"celia.itemglint.ItemGlint"
+		],
+		"client": [
+			"celia.itemglint.client.ItemGlintClient"
+		],
+		"modmenu": [
+			"celia.itemglint.client.ItemGlintModMenuApi"
+		]
+	},
+	"mixins": [
+		"itemglint.mixins.json",
+		{
+			"config": "itemglint.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=${loader_version}",
+		"minecraft": "~1.21.11",
+		"java": ">=21",
+		"fabric-api": "*"
+	}
+}

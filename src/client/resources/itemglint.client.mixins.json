@@ -1,0 +1,20 @@
+{
+	"required": true,
+	"package": "celia.itemglint.mixin.client",
+	"plugin": "celia.itemglint.mixin.ItemGlintMixinPlugin",
+	"compatibilityLevel": "JAVA_21",
+	"client": [
+		"BufferSourceMixin",
+		"FeatureRenderDispatcherAccessor",
+		"GameRendererFrameMixin",
+		"GameRendererAccessor",
+		"GameRendererIrisMixin",
+		"ItemStackLayerRenderStateAccessor",
+		"ItemStackRenderStateAccessor",
+		"SpriteContentsAccessor",
+		"ItemInHandRendererMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}

@@ -1,0 +1,12 @@
+package celia.itemglint.mixin.client;
+
+import net.minecraft.client.renderer.feature.FeatureRenderDispatcher;
+import net.minecraft.client.resources.model.AtlasManager;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.gen.Accessor;
+
+@Mixin(FeatureRenderDispatcher.class)
+public interface FeatureRenderDispatcherAccessor {
+    @Accessor("atlasManager")
+    AtlasManager itemglint$getAtlasManager();
+}
