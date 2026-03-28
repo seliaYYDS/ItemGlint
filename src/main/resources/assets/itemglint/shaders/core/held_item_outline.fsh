@@ -28,6 +28,26 @@ in vec2 texCoord;
 
 out vec4 fragColor;
 
+const int OUTLINE_SAMPLE_COUNT = 16;
+const vec2 OUTLINE_DIRECTIONS[OUTLINE_SAMPLE_COUNT] = vec2[](
+    vec2(1.0, 0.0),
+    vec2(0.9238795, 0.3826834),
+    vec2(0.7071068, 0.7071068),
+    vec2(0.3826834, 0.9238795),
+    vec2(0.0, 1.0),
+    vec2(-0.3826834, 0.9238795),
+    vec2(-0.7071068, 0.7071068),
+    vec2(-0.9238795, 0.3826834),
+    vec2(-1.0, 0.0),
+    vec2(-0.9238795, -0.3826834),
+    vec2(-0.7071068, -0.7071068),
+    vec2(-0.3826834, -0.9238795),
+    vec2(0.0, -1.0),
+    vec2(0.3826834, -0.9238795),
+    vec2(0.7071068, -0.7071068),
+    vec2(0.9238795, -0.3826834)
+);
+
 float saturate(float value) {
     return clamp(value, 0.0, 1.0);
 }
@@ -97,32 +117,38 @@ void main() {
     float radius = max(OutlineWidth, 0.5);
     float softnessNorm = saturate((Softness - 0.10) / 3.90);
     float featherRadius = mix(0.45, 2.8, softnessNorm);
-
-    vec2 stepX = vec2(texel.x, 0.0);
-    vec2 stepY = vec2(0.0, texel.y);
-    vec2 diagA = vec2(texel.x, texel.y) * 0.70710678;
-    vec2 diagB = vec2(texel.x, -texel.y) * 0.70710678;
-
-    vec2 offsets[8] = vec2[](
-        stepX, -stepX, stepY, -stepY,
-        diagA, -diagA, diagB, -diagB
-    );
+    float bridgeRadius = max(radius * 0.62, radius - 0.85);
 
     float centerWeight = maskWeight(maskAlpha(texCoord));
     float outerCore = 0.0;
     float outerFeather = 0.0;
+    float bridgeCore = 0.0;
+    float coreSum = 0.0;
+    float featherSum = 0.0;
     float nearestDepth = depthAt(texCoord);
 
-    for (int i = 0; i < 8; i++) {
-        vec2 coreUv = texCoord + offsets[i] * radius;
-        vec2 featherUv = texCoord + offsets[i] * (radius + featherRadius);
+    for (int i = 0; i < OUTLINE_SAMPLE_COUNT; i++) {
+        vec2 direction = OUTLINE_DIRECTIONS[i] * texel;
+        vec2 coreUv = texCoord + direction * radius;
+        vec2 featherUv = texCoord + direction * (radius + featherRadius);
+        vec2 bridgeUv = texCoord + direction * bridgeRadius;
 
-        outerCore = max(outerCore, maskWeight(maskAlpha(coreUv)));
-        outerFeather = max(outerFeather, maskWeight(maskAlpha(featherUv)));
-        nearestDepth = min(nearestDepth, depthAt(coreUv));
+        float coreSample = maskWeight(maskAlpha(coreUv));
+        float featherSample = maskWeight(maskAlpha(featherUv));
+        float bridgeSample = maskWeight(maskAlpha(bridgeUv));
+
+        outerCore = max(outerCore, coreSample);
+        outerFeather = max(outerFeather, featherSample);
+        bridgeCore = max(bridgeCore, bridgeSample);
+        coreSum += coreSample;
+        featherSum += featherSample;
+        nearestDepth = min(nearestDepth, min(depthAt(coreUv), depthAt(bridgeUv)));
     }
 
-    float shell = saturate(max(outerCore, outerFeather * 0.92) - centerWeight);
+    float coreAverage = coreSum / float(OUTLINE_SAMPLE_COUNT);
+    float featherAverage = featherSum / float(OUTLINE_SAMPLE_COUNT);
+    float cornerFill = max(outerCore, mix(bridgeCore, coreAverage, 0.35));
+    float shell = saturate(max(cornerFill, max(outerFeather * 0.92, featherAverage * 0.70)) - centerWeight);
     shell = pow(shell, mix(1.35, 0.72, softnessNorm));
 
     float depthContrast = saturate((depthAt(texCoord) - nearestDepth) * (1.2 + DepthWeight * 5.0));

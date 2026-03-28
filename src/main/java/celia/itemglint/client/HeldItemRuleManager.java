@@ -35,8 +35,11 @@ public final class HeldItemRuleManager {
     private static List<String> blacklistEntries = new ArrayList<>();
     private static List<String> normalizedWhitelistEntries = new ArrayList<>();
     private static List<String> normalizedBlacklistEntries = new ArrayList<>();
+    private static List<RuleSelector> compiledWhitelistSelectors = List.of();
+    private static List<RuleSelector> compiledBlacklistSelectors = List.of();
     private static List<CustomRule> customRules = new ArrayList<>();
     private static List<CompiledCustomRule> compiledCustomRules = List.of();
+    private static long revision;
 
     private HeldItemRuleManager() {
     }
@@ -45,8 +48,16 @@ public final class HeldItemRuleManager {
         return ruleMode;
     }
 
+    public static long getRevision() {
+        return revision;
+    }
+
     public static void setRuleMode(RuleMode mode) {
-        ruleMode = mode == null ? RuleMode.ALL : mode;
+        RuleMode nextMode = mode == null ? RuleMode.ALL : mode;
+        if (ruleMode != nextMode) {
+            ruleMode = nextMode;
+            bumpRevision();
+        }
     }
 
     public static List<String> getWhitelistEntries() {
@@ -54,8 +65,15 @@ public final class HeldItemRuleManager {
     }
 
     public static void setWhitelistEntries(List<String> entries) {
-        whitelistEntries = sanitizeEntries(entries);
+        List<String> sanitizedEntries = sanitizeEntries(entries);
+        if (whitelistEntries.equals(sanitizedEntries)) {
+            return;
+        }
+
+        whitelistEntries = sanitizedEntries;
         normalizedWhitelistEntries = whitelistEntries.stream().map(HeldItemRuleManager::normalizeSelectorText).toList();
+        compiledWhitelistSelectors = compileSelectorList(normalizedWhitelistEntries);
+        bumpRevision();
     }
 
     public static List<String> getBlacklistEntries() {
@@ -63,8 +81,15 @@ public final class HeldItemRuleManager {
     }
 
     public static void setBlacklistEntries(List<String> entries) {
-        blacklistEntries = sanitizeEntries(entries);
+        List<String> sanitizedEntries = sanitizeEntries(entries);
+        if (blacklistEntries.equals(sanitizedEntries)) {
+            return;
+        }
+
+        blacklistEntries = sanitizedEntries;
         normalizedBlacklistEntries = blacklistEntries.stream().map(HeldItemRuleManager::normalizeSelectorText).toList();
+        compiledBlacklistSelectors = compileSelectorList(normalizedBlacklistEntries);
+        bumpRevision();
     }
 
     public static List<CustomRule> getCustomRules() {
@@ -87,8 +112,15 @@ public final class HeldItemRuleManager {
             compiled.add(new CompiledCustomRule(rule));
         }
 
-        customRules = List.copyOf(sanitized);
-        compiledCustomRules = List.copyOf(compiled);
+        List<CustomRule> sanitizedCopy = List.copyOf(sanitized);
+        List<CompiledCustomRule> compiledCopy = List.copyOf(compiled);
+        if (customRules.equals(sanitizedCopy)) {
+            return;
+        }
+
+        customRules = sanitizedCopy;
+        compiledCustomRules = compiledCopy;
+        bumpRevision();
     }
 
     public static StateSnapshot captureState() {
@@ -112,17 +144,20 @@ public final class HeldItemRuleManager {
     }
 
     public static ResolvedMatch resolveMatch(ItemStack stack) {
+        return resolveMatch(stack, HeldItemOutlineEffectProfile.captureCurrent());
+    }
+
+    public static ResolvedMatch resolveMatch(ItemStack stack, HeldItemOutlineEffectProfile baseProfile) {
         if (stack == null || stack.isEmpty()) {
             return ResolvedMatch.NO_MATCH;
         }
 
-        HeldItemOutlineEffectProfile baseProfile = HeldItemOutlineEffectProfile.captureCurrent();
         return switch (ruleMode) {
             case ALL -> new ResolvedMatch(baseProfile, "all");
-            case WHITELIST -> matchesSelectorList(stack, normalizedWhitelistEntries)
+            case WHITELIST -> matchesSelectorList(stack, compiledWhitelistSelectors)
                     ? new ResolvedMatch(baseProfile, "whitelist")
                     : new ResolvedMatch(null, "whitelist:none");
-            case BLACKLIST -> matchesSelectorList(stack, normalizedBlacklistEntries)
+            case BLACKLIST -> matchesSelectorList(stack, compiledBlacklistSelectors)
                     ? new ResolvedMatch(null, "blacklist:blocked")
                     : new ResolvedMatch(baseProfile, "blacklist");
             case CUSTOM -> resolveCustomProfile(stack, baseProfile);
@@ -216,14 +251,32 @@ public final class HeldItemRuleManager {
         return new ResolvedMatch(null, "custom:none");
     }
 
-    private static boolean matchesSelectorList(ItemStack stack, List<String> normalizedEntries) {
-        for (String entry : normalizedEntries) {
-            RuleSelector selector = RuleSelector.parse(entry, false);
+    private static boolean matchesSelectorList(ItemStack stack, List<RuleSelector> selectors) {
+        for (RuleSelector selector : selectors) {
             if (selector.matches(stack)) {
                 return true;
             }
         }
         return false;
+    }
+
+    private static List<RuleSelector> compileSelectorList(List<String> normalizedEntries) {
+        if (normalizedEntries.isEmpty()) {
+            return List.of();
+        }
+
+        List<RuleSelector> selectors = new ArrayList<>(normalizedEntries.size());
+        for (String entry : normalizedEntries) {
+            RuleSelector selector = RuleSelector.parse(entry, false);
+            if (selector.selectorType() != SelectorType.INVALID) {
+                selectors.add(selector);
+            }
+        }
+        return List.copyOf(selectors);
+    }
+
+    private static void bumpRevision() {
+        revision++;
     }
 
     private static List<String> sanitizeEntries(List<String> entries) {

@@ -1,5 +1,7 @@
 package celia.itemglint.client;
 
+import com.mojang.blaze3d.platform.NativeImage;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractSliderButton;
 import net.minecraft.client.gui.components.AbstractWidget;
@@ -9,12 +11,15 @@ import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.client.gui.narration.NarrationElementOutput;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -100,6 +105,7 @@ public class ShaderQuickConfigScreen extends Screen {
 
     @Override
     protected void rebuildWidgets() {
+        releaseColorWidgets();
         clearWidgets();
         this.labels.clear();
         this.bloomDependentWidgets.clear();
@@ -165,6 +171,12 @@ public class ShaderQuickConfigScreen extends Screen {
     @Override
     public void onClose() {
         cancelAndClose();
+    }
+
+    @Override
+    public void removed() {
+        releaseColorWidgets();
+        super.removed();
     }
 
     @Override
@@ -257,6 +269,15 @@ public class ShaderQuickConfigScreen extends Screen {
         graphics.drawString(this.font, Component.translatable("screen.itemglint.quick_config.summary.active_target", activeTarget), x, y, 0xAAB3C3, false);
         y += 12;
         graphics.drawString(this.font, Component.literal(toHex(getColor(this.activeColorTarget))), x, y, 0xFFFFFF, false);
+    }
+
+    private void releaseColorWidgets() {
+        if (this.colorPicker != null) {
+            this.colorPicker.releaseTexture();
+        }
+        if (this.brightnessBar != null) {
+            this.brightnessBar.releaseTexture();
+        }
     }
 
     private void addNavigation() {
@@ -1220,32 +1241,34 @@ public class ShaderQuickConfigScreen extends Screen {
     }
 
     private static final class ColorPickerBoxWidget extends AbstractWidget {
-        private static final int SAMPLE_STEP = 2;
+        private static final AtomicInteger NEXT_TEXTURE_ID = new AtomicInteger();
 
         private final int pickerWidth;
         private final int pickerHeight;
         private final BiConsumer<Float, Float> callback;
+        private final ResourceLocation textureId;
         private float hue;
         private float saturation;
         private float value;
         private boolean dragging;
+        private boolean textureDirty = true;
+        private float renderedValue = Float.NaN;
+        private DynamicTexture texture;
 
         private ColorPickerBoxWidget(int x, int y, int width, int height, float hue, float saturation, float value, BiConsumer<Float, Float> callback) {
             super(x, y, width, height, Component.translatable("screen.itemglint.quick_config.color_picker"));
             this.pickerWidth = width;
             this.pickerHeight = height;
             this.callback = callback;
+            this.textureId = new ResourceLocation("itemglint", "dynamic/color_picker_" + NEXT_TEXTURE_ID.incrementAndGet());
             setColor(hue, saturation, value);
         }
 
         @Override
         protected void renderWidget(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-            for (int py = this.getY(); py < this.getY() + this.pickerHeight; py += SAMPLE_STEP) {
-                for (int px = this.getX(); px < this.getX() + this.pickerWidth; px += SAMPLE_STEP) {
-                    float sampleHue = Mth.clamp((px - this.getX()) / (float) Math.max(1, this.pickerWidth - 1), 0.0F, 1.0F);
-                    float sampleSaturation = 1.0F - Mth.clamp((py - this.getY()) / (float) Math.max(1, this.pickerHeight - 1), 0.0F, 1.0F);
-                    graphics.fill(px, py, px + SAMPLE_STEP, py + SAMPLE_STEP, 0xFF000000 | Mth.hsvToRgb(sampleHue, sampleSaturation, this.value));
-                }
+            ensureTexture();
+            if (this.texture != null) {
+                graphics.blit(this.textureId, this.getX(), this.getY(), 0.0F, 0.0F, this.width, this.height, this.width, this.height);
             }
 
             graphics.renderOutline(this.getX(), this.getY(), this.width, this.height, 0xFF404040);
@@ -1290,7 +1313,13 @@ public class ShaderQuickConfigScreen extends Screen {
         private void setColor(float hue, float saturation, float value) {
             this.hue = Mth.positiveModulo(hue, 1.0F);
             this.saturation = Mth.clamp(saturation, 0.0F, 1.0F);
-            this.value = Mth.clamp(value, 0.0F, 1.0F);
+            float clampedValue = Mth.clamp(value, 0.0F, 1.0F);
+            if (Float.compare(this.value, clampedValue) != 0) {
+                this.value = clampedValue;
+                this.textureDirty = true;
+                return;
+            }
+            this.value = clampedValue;
         }
 
         private void updateFromMouse(double mouseX, double mouseY) {
@@ -1298,28 +1327,80 @@ public class ShaderQuickConfigScreen extends Screen {
             this.saturation = 1.0F - Mth.clamp(((float) mouseY - this.getY()) / Math.max(1.0F, this.pickerHeight - 1.0F), 0.0F, 1.0F);
             this.callback.accept(this.hue, this.saturation);
         }
+
+        private void ensureTexture() {
+            if (this.texture != null && !this.textureDirty && Float.compare(this.renderedValue, this.value) == 0) {
+                return;
+            }
+
+            NativeImage image;
+            if (this.texture == null) {
+                image = new NativeImage(this.width, this.height, false);
+                this.texture = new DynamicTexture(image);
+                Minecraft.getInstance().getTextureManager().register(this.textureId, this.texture);
+            } else {
+                image = this.texture.getPixels();
+            }
+
+            if (image == null || image.getWidth() != this.width || image.getHeight() != this.height) {
+                releaseTexture();
+                image = new NativeImage(this.width, this.height, false);
+                this.texture = new DynamicTexture(image);
+                Minecraft.getInstance().getTextureManager().register(this.textureId, this.texture);
+            }
+
+            for (int py = 0; py < this.height; py++) {
+                float sampleSaturation = 1.0F - Mth.clamp(py / (float) Math.max(1, this.height - 1), 0.0F, 1.0F);
+                for (int px = 0; px < this.width; px++) {
+                    float sampleHue = Mth.clamp(px / (float) Math.max(1, this.width - 1), 0.0F, 1.0F);
+                    image.setPixelRGBA(px, py, 0xFF000000 | Mth.hsvToRgb(sampleHue, sampleSaturation, this.value));
+                }
+            }
+
+            this.texture.upload();
+            this.renderedValue = this.value;
+            this.textureDirty = false;
+        }
+
+        private void releaseTexture() {
+            Minecraft minecraft = Minecraft.getInstance();
+            if (minecraft != null) {
+                minecraft.getTextureManager().release(this.textureId);
+            } else if (this.texture != null) {
+                this.texture.close();
+            }
+            this.texture = null;
+            this.textureDirty = true;
+            this.renderedValue = Float.NaN;
+        }
     }
 
     private static final class BrightnessBarWidget extends AbstractWidget {
-        private static final int SAMPLE_STEP = 2;
+        private static final AtomicInteger NEXT_TEXTURE_ID = new AtomicInteger();
 
         private final Consumer<Float> callback;
+        private final ResourceLocation textureId;
         private float hue;
         private float saturation;
         private float value;
         private boolean dragging;
+        private boolean textureDirty = true;
+        private float renderedHue = Float.NaN;
+        private float renderedSaturation = Float.NaN;
+        private DynamicTexture texture;
 
         private BrightnessBarWidget(int x, int y, int width, int height, float hue, float saturation, float value, Consumer<Float> callback) {
             super(x, y, width, height, Component.translatable("screen.itemglint.quick_config.brightness"));
             this.callback = callback;
+            this.textureId = new ResourceLocation("itemglint", "dynamic/brightness_bar_" + NEXT_TEXTURE_ID.incrementAndGet());
             setColor(hue, saturation, value);
         }
 
         @Override
         protected void renderWidget(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-            for (int py = this.getY(); py < this.getY() + this.height; py += SAMPLE_STEP) {
-                float sampleValue = 1.0F - Mth.clamp((py - this.getY()) / (float) Math.max(1, this.height - 1), 0.0F, 1.0F);
-                graphics.fill(this.getX(), py, this.getX() + this.width, py + SAMPLE_STEP, 0xFF000000 | Mth.hsvToRgb(this.hue, this.saturation, sampleValue));
+            ensureTexture();
+            if (this.texture != null) {
+                graphics.blit(this.textureId, this.getX(), this.getY(), 0.0F, 0.0F, this.width, this.height, this.width, this.height);
             }
 
             graphics.renderOutline(this.getX(), this.getY(), this.width, this.height, 0xFF404040);
@@ -1361,14 +1442,69 @@ public class ShaderQuickConfigScreen extends Screen {
         }
 
         private void setColor(float hue, float saturation, float value) {
-            this.hue = Mth.positiveModulo(hue, 1.0F);
-            this.saturation = Mth.clamp(saturation, 0.0F, 1.0F);
+            float normalizedHue = Mth.positiveModulo(hue, 1.0F);
+            float clampedSaturation = Mth.clamp(saturation, 0.0F, 1.0F);
+            if (Float.compare(this.hue, normalizedHue) != 0 || Float.compare(this.saturation, clampedSaturation) != 0) {
+                this.textureDirty = true;
+            }
+            this.hue = normalizedHue;
+            this.saturation = clampedSaturation;
             this.value = Mth.clamp(value, 0.0F, 1.0F);
         }
 
         private void updateFromMouse(double mouseY) {
             this.value = 1.0F - Mth.clamp(((float) mouseY - this.getY()) / Math.max(1.0F, this.height - 1.0F), 0.0F, 1.0F);
             this.callback.accept(this.value);
+        }
+
+        private void ensureTexture() {
+            if (this.texture != null && !this.textureDirty
+                    && Float.compare(this.renderedHue, this.hue) == 0
+                    && Float.compare(this.renderedSaturation, this.saturation) == 0) {
+                return;
+            }
+
+            NativeImage image;
+            if (this.texture == null) {
+                image = new NativeImage(this.width, this.height, false);
+                this.texture = new DynamicTexture(image);
+                Minecraft.getInstance().getTextureManager().register(this.textureId, this.texture);
+            } else {
+                image = this.texture.getPixels();
+            }
+
+            if (image == null || image.getWidth() != this.width || image.getHeight() != this.height) {
+                releaseTexture();
+                image = new NativeImage(this.width, this.height, false);
+                this.texture = new DynamicTexture(image);
+                Minecraft.getInstance().getTextureManager().register(this.textureId, this.texture);
+            }
+
+            for (int py = 0; py < this.height; py++) {
+                float sampleValue = 1.0F - Mth.clamp(py / (float) Math.max(1, this.height - 1), 0.0F, 1.0F);
+                int color = 0xFF000000 | Mth.hsvToRgb(this.hue, this.saturation, sampleValue);
+                for (int px = 0; px < this.width; px++) {
+                    image.setPixelRGBA(px, py, color);
+                }
+            }
+
+            this.texture.upload();
+            this.renderedHue = this.hue;
+            this.renderedSaturation = this.saturation;
+            this.textureDirty = false;
+        }
+
+        private void releaseTexture() {
+            Minecraft minecraft = Minecraft.getInstance();
+            if (minecraft != null) {
+                minecraft.getTextureManager().release(this.textureId);
+            } else if (this.texture != null) {
+                this.texture.close();
+            }
+            this.texture = null;
+            this.textureDirty = true;
+            this.renderedHue = Float.NaN;
+            this.renderedSaturation = Float.NaN;
         }
     }
 }

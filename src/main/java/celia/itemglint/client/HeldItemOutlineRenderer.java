@@ -27,6 +27,7 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.level.GameType;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
+import org.joml.Vector4f;
 import celia.itemglint.mixin.client.GameRendererAccessor;
 
 import java.lang.reflect.Field;
@@ -36,11 +37,17 @@ import java.util.Locale;
 public final class HeldItemOutlineRenderer {
     private static final int DEBUG_LOG_INTERVAL = 120;
     private static final long RULE_SWITCH_DELAY_MILLIS = 200L;
+    private static final long ANIMATION_TIME_WRAP_TICKS = 240000L;
     private static final float BLOOM_BLUR_PASS_RADIUS = 2.5F;
+    private static final float BLOOM_BLUR_KERNEL_RADIUS = 6.9230769F;
+    private static final float SMALL_BLOOM_FAST_PATH_RADIUS = 1.0F;
     private static final int MIN_BLOOM_TARGET_SIZE = 64;
+    private static final int SCISSOR_BASE_PADDING = 8;
+    private static final int SCISSOR_BLOOM_PADDING = 4;
     private static final boolean ENABLE_MASK_DEBUG_READBACK = Boolean.getBoolean("itemglint.debugHeldOutlineReadback");
     private static final boolean ENABLE_COMPAT_DEBUG_LOG = ItemGlint.COMPAT_DEBUG;
     private static final float OCULUS_HAND_DEPTH = 0.125F;
+    private static final float[][] HAND_RENDER_BOUNDS_SAMPLES = createHandRenderBoundsSamples();
     @Nullable
     private static Object oculusHandRendererInstance;
     @Nullable
@@ -58,6 +65,8 @@ public final class HeldItemOutlineRenderer {
     private static long lastCompatDebugMillis = Long.MIN_VALUE;
     @Nullable
     private static RenderBuffers embeddiumCaptureRenderBuffers;
+    @Nullable
+    private static Matrix4f activeHandProjectionMatrix;
 
     private HeldItemOutlineRenderer() {
     }
@@ -82,7 +91,26 @@ public final class HeldItemOutlineRenderer {
         return targets;
     }
 
-    public static boolean beginCapture(Minecraft minecraft, RenderTarget mainTarget, InteractionHand hand) {
+    public static void beginItemInHandRender(@Nullable Matrix4f projectionMatrix) {
+        activeHandProjectionMatrix = projectionMatrix == null ? null : new Matrix4f(projectionMatrix);
+    }
+
+    public static void endItemInHandRender() {
+        activeHandProjectionMatrix = null;
+    }
+
+    public static boolean shouldBatchHands(@Nullable HandEffectTarget current, @Nullable HandEffectTarget next) {
+        if (current == null || next == null) {
+            return false;
+        }
+        return current.profile().equals(next.profile())
+                && sameSampledColors(current.sampledColors(), next.sampledColors());
+    }
+
+    public static boolean beginCapture(Minecraft minecraft, RenderTarget mainTarget, InteractionHand stateHand,
+                                       @Nullable InteractionHand handFilter, @Nullable Matrix4f modelViewMatrix,
+                                       HeldItemOutlineEffectProfile profile,
+                                       HeldItemOutlineColorSampler.SampledColors sampledColors) {
         ShaderInstance shader = HeldItemOutlineShaderRegistry.getShader();
         if (shader == null || minecraft.level == null || minecraft.player == null || !shouldRenderOutline(minecraft)) {
             debugCompat(minecraft, "beginCapture skipped: shader=" + (shader != null)
@@ -93,9 +121,13 @@ public final class HeldItemOutlineRenderer {
             return false;
         }
 
-        CaptureState state = stateFor(hand);
+        CaptureState state = stateFor(stateHand);
         state.resetImmediateFrameState();
-        debugCompat(minecraft, "beginCapture start: hand=" + hand + ", target=" + mainTarget.width + "x" + mainTarget.height);
+        state.captureHandFilter = handFilter;
+        state.capturedRenderState = new ResolvedRenderState(profile, sampledColors);
+        state.capturedModelViewMatrix = modelViewMatrix == null ? null : new Matrix4f(modelViewMatrix);
+        state.scissorRect = handFilter != null ? resolveHandScissorRect(mainTarget, state.capturedModelViewMatrix, state.capturedRenderState) : null;
+        debugCompat(minecraft, "beginCapture start: hand=" + stateHand + ", target=" + mainTarget.width + "x" + mainTarget.height);
         ensureOutlineMaskTarget(mainTarget, state);
         state.outlineMaskTarget.setClearColor(0.0F, 0.0F, 0.0F, 0.0F);
         state.outlineMaskTarget.clear(Minecraft.ON_OSX);
@@ -109,7 +141,10 @@ public final class HeldItemOutlineRenderer {
         return true;
     }
 
-    public static boolean beginEmbeddiumCompatCapture(Minecraft minecraft, RenderTarget mainTarget, InteractionHand hand) {
+    public static boolean beginEmbeddiumCompatCapture(Minecraft minecraft, RenderTarget mainTarget, InteractionHand stateHand,
+                                                      @Nullable InteractionHand handFilter, @Nullable Matrix4f modelViewMatrix,
+                                                      HeldItemOutlineEffectProfile profile,
+                                                      HeldItemOutlineColorSampler.SampledColors sampledColors) {
         ShaderInstance shader = HeldItemOutlineShaderRegistry.getShader();
         if (shader == null || minecraft.level == null || minecraft.player == null || !shouldRenderOutline(minecraft)) {
             debugCompat(minecraft, "beginEmbeddiumCompatCapture skipped: shader=" + (shader != null)
@@ -123,7 +158,7 @@ public final class HeldItemOutlineRenderer {
             return false;
         }
 
-        CaptureState state = stateFor(hand);
+        CaptureState state = stateFor(stateHand);
         ensureOutlineMaskTarget(mainTarget, state);
         if (!state.embeddiumCompatFramePrepared) {
             state.outlineMaskTarget.setClearColor(0.0F, 0.0F, 0.0F, 0.0F);
@@ -133,6 +168,10 @@ public final class HeldItemOutlineRenderer {
             state.lastSampledCoverage = 0.0F;
             state.embeddiumCompatFramePrepared = true;
         }
+        state.captureHandFilter = handFilter;
+        state.capturedRenderState = new ResolvedRenderState(profile, sampledColors);
+        state.capturedModelViewMatrix = modelViewMatrix == null ? null : new Matrix4f(modelViewMatrix);
+        state.scissorRect = handFilter != null ? resolveHandScissorRect(mainTarget, state.capturedModelViewMatrix, state.capturedRenderState) : null;
 
         state.outlineMaskTarget.bindWrite(true);
         RenderSystem.enableDepthTest();
@@ -208,7 +247,9 @@ public final class HeldItemOutlineRenderer {
             return;
         }
 
-        for (HandEffectTarget target : getRenderableHands(player)) {
+        List<HandEffectTarget> targets = getRenderableHands(player);
+        for (int index = 0; index < targets.size(); index++) {
+            HandEffectTarget target = targets.get(index);
             CaptureState state = stateFor(target.hand());
             if (!state.embeddiumCompatFrameQueued) {
                 continue;
@@ -221,7 +262,11 @@ public final class HeldItemOutlineRenderer {
                     + ", capturedHands=" + state.capturedHandCount
                     + ", capturedThisFrame=" + state.capturedThisFrame
                     + ", mainTarget=" + mainTarget.width + "x" + mainTarget.height);
-            composite(minecraft, mainTarget, target.hand(), target.profile(), target.sampledColors());
+            boolean sharedCapture = state.captureHandFilter == null;
+            composite(minecraft, mainTarget, target.hand());
+            if (sharedCapture && index + 1 < targets.size() && shouldBatchHands(target, targets.get(index + 1))) {
+                index++;
+            }
         }
     }
 
@@ -257,47 +302,67 @@ public final class HeldItemOutlineRenderer {
         Matrix4f scaledProjection = new Matrix4f()
                 .scale(1.0F, 1.0F, OCULUS_HAND_DEPTH)
                 .mul(gameRenderer.getProjectionMatrix(accessor.invokeGetFov(camera, tickDelta, false)));
+        beginItemInHandRender(scaledProjection);
 
         int packedLight = minecraft.getEntityRenderDispatcher().getPackedLightCoords(camera.getEntity(), tickDelta);
-        for (HandEffectTarget target : getRenderableHands(player)) {
-            if (!beginEmbeddiumCompatCapture(minecraft, minecraft.getMainRenderTarget(), target.hand())) {
-                debugCompat(minecraft, "renderOculusShaderpackCompatPass beginEmbeddiumCompatCapture returned false solidPass=" + solidPass);
-                continue;
-            }
+        List<HandEffectTarget> targets = getRenderableHands(player);
+        try {
+            for (int index = 0; index < targets.size(); index++) {
+                HandEffectTarget target = targets.get(index);
+                HandEffectTarget nextTarget = index + 1 < targets.size() ? targets.get(index + 1) : null;
+                boolean batchHands = shouldBatchHands(target, nextTarget);
 
-            if (!setOculusHandRendererState(false, solidPass)) {
-                debugCompat(minecraft, "renderOculusShaderpackCompatPass failed to toggle Oculus hand state solidPass=" + solidPass);
-                endEmbeddiumCompatCapture();
-                continue;
-            }
+                poseStack.pushPose();
+                gameRenderer.resetProjectionMatrix(scaledProjection);
+                PoseStack.Pose pose = poseStack.last();
+                pose.pose().identity();
+                pose.normal().identity();
+                accessor.invokeBobHurt(poseStack, tickDelta);
+                if (minecraft.options.bobView().get()) {
+                    accessor.invokeBobView(poseStack, tickDelta);
+                }
 
-            poseStack.pushPose();
-            gameRenderer.resetProjectionMatrix(scaledProjection);
-            PoseStack.Pose pose = poseStack.last();
-            pose.pose().identity();
-            pose.normal().identity();
-            accessor.invokeBobHurt(poseStack, tickDelta);
-            if (minecraft.options.bobView().get()) {
-                accessor.invokeBobView(poseStack, tickDelta);
-            }
+                Matrix4f captureModelView = new Matrix4f(pose.pose());
+                if (!beginEmbeddiumCompatCapture(minecraft, minecraft.getMainRenderTarget(), target.hand(),
+                        batchHands ? null : target.hand(), captureModelView, target.profile(), target.sampledColors())) {
+                    debugCompat(minecraft, "renderOculusShaderpackCompatPass beginEmbeddiumCompatCapture returned false solidPass=" + solidPass);
+                    gameRenderer.resetProjectionMatrix(projectionMatrix);
+                    poseStack.popPose();
+                    continue;
+                }
 
-            lightTexture.turnOnLightLayer();
-            try {
-                itemInHandRenderer.renderHandsWithItems(
-                        tickDelta,
-                        poseStack,
-                        captureBufferSource,
-                        player,
-                        packedLight
-                );
-                captureBufferSource.endBatch();
-            } finally {
-                setOculusHandRendererState(false, false);
-                endEmbeddiumCompatCapture();
-                lightTexture.turnOffLightLayer();
-                gameRenderer.resetProjectionMatrix(projectionMatrix);
-                poseStack.popPose();
+                if (!setOculusHandRendererState(false, solidPass)) {
+                    debugCompat(minecraft, "renderOculusShaderpackCompatPass failed to toggle Oculus hand state solidPass=" + solidPass);
+                    endEmbeddiumCompatCapture();
+                    gameRenderer.resetProjectionMatrix(projectionMatrix);
+                    poseStack.popPose();
+                    continue;
+                }
+
+                lightTexture.turnOnLightLayer();
+                try {
+                    itemInHandRenderer.renderHandsWithItems(
+                            tickDelta,
+                            poseStack,
+                            captureBufferSource,
+                            player,
+                            packedLight
+                    );
+                    captureBufferSource.endBatch();
+                } finally {
+                    setOculusHandRendererState(false, false);
+                    endEmbeddiumCompatCapture();
+                    lightTexture.turnOffLightLayer();
+                    gameRenderer.resetProjectionMatrix(projectionMatrix);
+                    poseStack.popPose();
+                }
+
+                if (batchHands) {
+                    index++;
+                }
             }
+        } finally {
+            endItemInHandRender();
         }
     }
 
@@ -308,11 +373,11 @@ public final class HeldItemOutlineRenderer {
         }
     }
 
-    public static void composite(Minecraft minecraft, RenderTarget mainTarget, InteractionHand hand, HeldItemOutlineEffectProfile profile,
-                                 HeldItemOutlineColorSampler.SampledColors sampledColors) {
+    public static void composite(Minecraft minecraft, RenderTarget mainTarget, InteractionHand hand) {
         CaptureState state = stateFor(hand);
+        ResolvedRenderState renderState = state.capturedRenderState;
         ShaderInstance outlineShader = HeldItemOutlineShaderRegistry.getShader();
-        if (!state.capturedThisFrame || outlineShader == null || state.outlineMaskTarget == null) {
+        if (!state.capturedThisFrame || outlineShader == null || state.outlineMaskTarget == null || renderState == null) {
             debugCompat(minecraft, "composite skipped: hand=" + hand + ", capturedThisFrame=" + state.capturedThisFrame
                     + ", shader=" + (outlineShader != null)
                     + ", outlineMaskTarget=" + (state.outlineMaskTarget != null));
@@ -330,13 +395,17 @@ public final class HeldItemOutlineRenderer {
         RenderSystem.enableBlend();
         RenderSystem.defaultBlendFunc();
 
-        applyOutlineUniforms(minecraft, mainTarget, outlineShader, state.outlineMaskTarget, profile, sampledColors);
+        applyOutlineUniforms(minecraft, mainTarget, outlineShader, state.outlineMaskTarget,
+                renderState.profile(), renderState.sampledColors());
         state.outlineMaskTarget.setFilterMode(9728);
         RenderSystem.defaultBlendFunc();
+        applyScissor(state.scissorRect);
         drawFullscreenQuad(outlineShader);
+        clearScissor();
 
-        if (profile.bloom()) {
-            compositeBloom(minecraft, mainTarget, state.outlineMaskTarget, profile, sampledColors);
+        if (renderState.profile().bloom()) {
+            compositeBloom(minecraft, mainTarget, state.outlineMaskTarget,
+                    renderState.profile(), renderState.sampledColors(), state.scissorRect);
         }
 
         RenderSystem.disableBlend();
@@ -355,7 +424,9 @@ public final class HeldItemOutlineRenderer {
     }
 
     public static boolean shouldSkipHand(InteractionHand hand) {
-        return activeCaptureState != null && activeCaptureState.captureActive && activeCaptureState.hand != hand;
+        return activeCaptureState != null && activeCaptureState.captureActive
+                && activeCaptureState.captureHandFilter != null
+                && activeCaptureState.captureHandFilter != hand;
     }
 
     public static boolean hasCapturedThisFrame() {
@@ -395,10 +466,7 @@ public final class HeldItemOutlineRenderer {
     private static HandEffectTarget resolveHandTarget(InteractionHand hand, boolean handEnabled, ItemStack stack) {
         CaptureState state = stateFor(hand);
         ItemStack observedStack = handEnabled ? stack : ItemStack.EMPTY;
-        HeldItemRuleManager.ResolvedMatch resolvedMatch = handEnabled && !stack.isEmpty()
-                ? HeldItemRuleManager.resolveMatch(stack)
-                : HeldItemRuleManager.ResolvedMatch.NO_MATCH;
-        ResolvedRenderState nextState = createResolvedRenderState(stack, resolvedMatch.profile());
+        ResolvedRenderState nextState = resolveCachedRenderState(state, handEnabled, observedStack, stack);
         long now = System.currentTimeMillis();
         if (state.transitionEndMillis != 0L && (!HeldItemOutlineSettings.isRuleSwitchDelayEnabled() || now >= state.transitionEndMillis)) {
             completePendingTransition(state);
@@ -424,6 +492,29 @@ public final class HeldItemOutlineRenderer {
             return null;
         }
         return new ResolvedRenderState(profile, resolveSampledColors(stack, profile));
+    }
+
+    @Nullable
+    private static ResolvedRenderState resolveCachedRenderState(CaptureState state, boolean handEnabled, ItemStack observedStack, ItemStack liveStack) {
+        HeldItemOutlineEffectProfile baseProfile = HeldItemOutlineEffectProfile.captureCurrent();
+        long ruleRevision = HeldItemRuleManager.getRevision();
+        if (state.cachedBaseProfile != null
+                && state.cachedRuleRevision == ruleRevision
+                && state.cachedObservedHandEnabled == handEnabled
+                && state.cachedBaseProfile.equals(baseProfile)
+                && ItemStack.isSameItemSameTags(state.cachedObservedResolvedStack, observedStack)) {
+            return state.cachedResolvedState;
+        }
+
+        state.cachedObservedHandEnabled = handEnabled;
+        state.cachedObservedResolvedStack = observedStack.copy();
+        state.cachedBaseProfile = baseProfile;
+        state.cachedRuleRevision = ruleRevision;
+        HeldItemRuleManager.ResolvedMatch resolvedMatch = handEnabled && !liveStack.isEmpty()
+                ? HeldItemRuleManager.resolveMatch(liveStack, baseProfile)
+                : HeldItemRuleManager.ResolvedMatch.NO_MATCH;
+        state.cachedResolvedState = createResolvedRenderState(liveStack, resolvedMatch.profile());
+        return state.cachedResolvedState;
     }
 
     @Nullable
@@ -583,7 +674,7 @@ public final class HeldItemOutlineRenderer {
             outlineShader.getUniform("GlowStrength").set(profile.glowStrength());
         }
         if (outlineShader.getUniform("Time") != null) {
-            outlineShader.getUniform("Time").set((minecraft.level.getGameTime() + minecraft.getFrameTime()) * 0.05F);
+            outlineShader.getUniform("Time").set(resolveAnimationTime(minecraft));
         }
     }
 
@@ -594,6 +685,7 @@ public final class HeldItemOutlineRenderer {
         MAIN_HAND_STATE.resetAfterComposite();
         OFF_HAND_STATE.resetAfterComposite();
         activeCaptureState = null;
+        activeHandProjectionMatrix = null;
     }
 
     private static boolean setOculusHandRendererState(boolean active, boolean renderingSolid) {
@@ -715,7 +807,8 @@ public final class HeldItemOutlineRenderer {
     }
 
     private static void compositeBloom(Minecraft minecraft, RenderTarget mainTarget, TextureTarget outlineMaskTarget,
-                                       HeldItemOutlineEffectProfile profile, HeldItemOutlineColorSampler.SampledColors sampledColors) {
+                                       HeldItemOutlineEffectProfile profile, HeldItemOutlineColorSampler.SampledColors sampledColors,
+                                       @Nullable ScissorRect scissorRect) {
         ShaderInstance blurShader = HeldItemBloomBlurShaderRegistry.getShader();
         ShaderInstance bloomShader = HeldItemBloomShaderRegistry.getShader();
         if (blurShader == null || bloomShader == null) {
@@ -728,25 +821,28 @@ public final class HeldItemOutlineRenderer {
             blurShader.getUniform("ScreenSize").set((float) bloomBlurTargetA.width, (float) bloomBlurTargetA.height);
         }
 
-        float nearBlurRadius = Math.max(1.0F, 1.2F + profile.width() * 0.35F);
-        float farBlurRadius = Math.max(1.0F, profile.bloomRadius() * 3.25F);
-        int farBlurPasses = Mth.clamp((int) Math.ceil(farBlurRadius / BLOOM_BLUR_PASS_RADIUS),
-                HeldItemOutlineSettings.MIN_BLOOM_MAX_PASSES,
-                profile.bloomMaxPasses());
+        float nearBlurRadius = getNearBlurRadius(profile);
+        float farBlurRadius = getFarBlurRadius(profile);
+        int farBlurPasses = getFarBlurPasses(profile, farBlurRadius);
         float farPassRadius = farBlurRadius / farBlurPasses;
+        ScissorRect bloomScissorRect = scaleScissorRect(scissorRect, outlineMaskTarget, bloomBlurTargetA);
 
         int nearTexture = applyBlurChain(blurShader,
                 outlineMaskTarget.getColorTextureId(),
                 bloomBlurTargetA,
                 bloomBlurNearTarget,
                 nearBlurRadius,
-                1);
-        int farTexture = applyBlurChain(blurShader,
+                1,
+                bloomScissorRect);
+        int farTexture = shouldUseNearOnlyBloom(profile, farBlurPasses)
+                ? nearTexture
+                : applyBlurChain(blurShader,
                 outlineMaskTarget.getColorTextureId(),
                 bloomBlurTargetA,
                 bloomBlurTargetB,
                 farPassRadius,
-                farBlurPasses);
+                farBlurPasses,
+                bloomScissorRect);
 
         mainTarget.bindWrite(true);
         RenderSystem.enableBlend();
@@ -777,7 +873,7 @@ public final class HeldItemOutlineRenderer {
             bloomShader.getUniform("GlowStrength").set(profile.glowStrength());
         }
         if (bloomShader.getUniform("Time") != null) {
-            bloomShader.getUniform("Time").set((minecraft.level.getGameTime() + minecraft.getFrameTime()) * 0.05F);
+            bloomShader.getUniform("Time").set(resolveAnimationTime(minecraft));
         }
         if (bloomShader.getUniform("BloomStrength") != null) {
             bloomShader.getUniform("BloomStrength").set(profile.bloomStrength());
@@ -785,7 +881,9 @@ public final class HeldItemOutlineRenderer {
         if (bloomShader.getUniform("BloomRadius") != null) {
             bloomShader.getUniform("BloomRadius").set(profile.bloomRadius());
         }
+        applyScissor(scissorRect);
         drawFullscreenQuad(bloomShader);
+        clearScissor();
     }
 
     private static int getBloomTargetDimension(int fullSize, HeldItemOutlineEffectProfile profile) {
@@ -794,12 +892,8 @@ public final class HeldItemOutlineRenderer {
     }
 
     private static int applyBlurChain(ShaderInstance blurShader, int sourceTexture, TextureTarget tempTarget,
-                                      TextureTarget destinationTarget, float blurRadius, int passes) {
-        tempTarget.setClearColor(0.0F, 0.0F, 0.0F, 0.0F);
-        tempTarget.clear(Minecraft.ON_OSX);
-        destinationTarget.setClearColor(0.0F, 0.0F, 0.0F, 0.0F);
-        destinationTarget.clear(Minecraft.ON_OSX);
-
+                                      TextureTarget destinationTarget, float blurRadius, int passes,
+                                      @Nullable ScissorRect scissorRect) {
         int currentTexture = sourceTexture;
         for (int i = 0; i < passes; i++) {
             if (blurShader.getUniform("BlurRadius") != null) {
@@ -811,18 +905,139 @@ public final class HeldItemOutlineRenderer {
             if (blurShader.getUniform("BlurDirection") != null) {
                 blurShader.getUniform("BlurDirection").set(1.0F, 0.0F);
             }
+            applyScissor(scissorRect);
             drawFullscreenQuad(blurShader);
+            clearScissor();
 
             destinationTarget.bindWrite(true);
             blurShader.setSampler("DiffuseSampler", tempTarget.getColorTextureId());
             if (blurShader.getUniform("BlurDirection") != null) {
                 blurShader.getUniform("BlurDirection").set(0.0F, 1.0F);
             }
+            applyScissor(scissorRect);
             drawFullscreenQuad(blurShader);
+            clearScissor();
 
             currentTexture = destinationTarget.getColorTextureId();
         }
         return currentTexture;
+    }
+
+    private static float getNearBlurRadius(HeldItemOutlineEffectProfile profile) {
+        return Math.max(1.0F, 1.2F + profile.width() * 0.35F);
+    }
+
+    private static float getFarBlurRadius(HeldItemOutlineEffectProfile profile) {
+        return Math.max(1.0F, profile.bloomRadius() * 3.25F);
+    }
+
+    private static int getFarBlurPasses(HeldItemOutlineEffectProfile profile, float farBlurRadius) {
+        return Mth.clamp((int) Math.ceil(farBlurRadius / BLOOM_BLUR_PASS_RADIUS),
+                HeldItemOutlineSettings.MIN_BLOOM_MAX_PASSES,
+                profile.bloomMaxPasses());
+    }
+
+    private static boolean shouldUseNearOnlyBloom(HeldItemOutlineEffectProfile profile, int farBlurPasses) {
+        return profile.bloomRadius() <= SMALL_BLOOM_FAST_PATH_RADIUS && farBlurPasses <= 2;
+    }
+
+    private static int getBloomPadding(HeldItemOutlineEffectProfile profile) {
+        float effectiveBlurRadius = shouldUseNearOnlyBloom(profile, getFarBlurPasses(profile, getFarBlurRadius(profile)))
+                ? getNearBlurRadius(profile)
+                : getFarBlurRadius(profile);
+        return Mth.ceil(BLOOM_BLUR_KERNEL_RADIUS * effectiveBlurRadius * profile.bloomResolution().downsampleFactor())
+                + SCISSOR_BLOOM_PADDING;
+    }
+
+    @Nullable
+    private static ScissorRect resolveHandScissorRect(RenderTarget mainTarget, @Nullable Matrix4f modelViewMatrix,
+                                                      @Nullable ResolvedRenderState renderState) {
+        if (activeHandProjectionMatrix == null || modelViewMatrix == null || mainTarget.width <= 0 || mainTarget.height <= 0) {
+            return null;
+        }
+
+        Matrix4f transform = new Matrix4f(activeHandProjectionMatrix).mul(modelViewMatrix);
+        float minClipX = Float.POSITIVE_INFINITY;
+        float minClipY = Float.POSITIVE_INFINITY;
+        float maxClipX = Float.NEGATIVE_INFINITY;
+        float maxClipY = Float.NEGATIVE_INFINITY;
+        boolean foundVisibleSample = false;
+        for (float[] sample : HAND_RENDER_BOUNDS_SAMPLES) {
+            Vector4f clip = transform.transform(new Vector4f(sample[0], sample[1], sample[2], 1.0F));
+            float w = clip.w;
+            if (!Float.isFinite(w) || Math.abs(w) < 0.0001F) {
+                continue;
+            }
+
+            float invW = 1.0F / w;
+            float ndcX = clip.x * invW;
+            float ndcY = clip.y * invW;
+            if (!Float.isFinite(ndcX) || !Float.isFinite(ndcY)) {
+                continue;
+            }
+
+            minClipX = Math.min(minClipX, ndcX);
+            minClipY = Math.min(minClipY, ndcY);
+            maxClipX = Math.max(maxClipX, ndcX);
+            maxClipY = Math.max(maxClipY, ndcY);
+            foundVisibleSample = true;
+        }
+
+        if (!foundVisibleSample) {
+            return null;
+        }
+
+        int x0 = Mth.floor((Mth.clamp(minClipX, -1.3F, 1.3F) * 0.5F + 0.5F) * mainTarget.width);
+        int y0 = Mth.floor((Mth.clamp(minClipY, -1.3F, 1.3F) * 0.5F + 0.5F) * mainTarget.height);
+        int x1 = Mth.ceil((Mth.clamp(maxClipX, -1.3F, 1.3F) * 0.5F + 0.5F) * mainTarget.width);
+        int y1 = Mth.ceil((Mth.clamp(maxClipY, -1.3F, 1.3F) * 0.5F + 0.5F) * mainTarget.height);
+        ScissorRect projectedRect = ScissorRect.fromCorners(x0, y0, x1, y1, mainTarget.width, mainTarget.height);
+        if (projectedRect == null) {
+            return null;
+        }
+
+        int padding = SCISSOR_BASE_PADDING;
+        if (renderState != null) {
+            padding += Mth.ceil(renderState.profile().width() * 10.0F + renderState.profile().softness() * 12.0F);
+            if (renderState.profile().bloom()) {
+                padding += getBloomPadding(renderState.profile());
+            }
+        }
+        return projectedRect.expand(padding, mainTarget.width, mainTarget.height);
+    }
+
+    private static void applyScissor(@Nullable ScissorRect scissorRect) {
+        if (scissorRect != null) {
+            RenderSystem.enableScissor(scissorRect.x(), scissorRect.y(), scissorRect.width(), scissorRect.height());
+        }
+    }
+
+    private static void clearScissor() {
+        RenderSystem.disableScissor();
+    }
+
+    @Nullable
+    private static ScissorRect scaleScissorRect(@Nullable ScissorRect scissorRect, RenderTarget sourceTarget, @Nullable RenderTarget target) {
+        if (scissorRect == null || sourceTarget == null || target == null) {
+            return scissorRect;
+        }
+        return scissorRect.scale(sourceTarget.width, sourceTarget.height, target.width, target.height);
+    }
+
+    private static float[][] createHandRenderBoundsSamples() {
+        float min = -1.10F;
+        float max = 2.10F;
+        float[] axes = new float[]{min, 0.5F, max};
+        float[][] samples = new float[axes.length * axes.length * axes.length][3];
+        int index = 0;
+        for (float x : axes) {
+            for (float y : axes) {
+                for (float z : axes) {
+                    samples[index++] = new float[]{x, y, z};
+                }
+            }
+        }
+        return samples;
     }
 
     private static void drawFullscreenQuad(ShaderInstance shader) {
@@ -859,12 +1074,52 @@ public final class HeldItemOutlineRenderer {
         }
     }
 
+    private static float resolveAnimationTime(Minecraft minecraft) {
+        if (minecraft.level == null) {
+            return 0.0F;
+        }
+
+        long wrappedGameTime = Math.floorMod(minecraft.level.getGameTime(), ANIMATION_TIME_WRAP_TICKS);
+        return (wrappedGameTime + minecraft.getFrameTime()) * 0.05F;
+    }
+
     public record HandEffectTarget(InteractionHand hand, HeldItemOutlineEffectProfile profile,
                                    HeldItemOutlineColorSampler.SampledColors sampledColors) {
     }
 
     private record ResolvedRenderState(HeldItemOutlineEffectProfile profile,
                                        HeldItemOutlineColorSampler.SampledColors sampledColors) {
+    }
+
+    private record ScissorRect(int x, int y, int width, int height) {
+        @Nullable
+        private static ScissorRect fromCorners(int x0, int y0, int x1, int y1, int maxWidth, int maxHeight) {
+            int minX = Mth.clamp(Math.min(x0, x1), 0, maxWidth);
+            int minY = Mth.clamp(Math.min(y0, y1), 0, maxHeight);
+            int maxX = Mth.clamp(Math.max(x0, x1), 0, maxWidth);
+            int maxY = Mth.clamp(Math.max(y0, y1), 0, maxHeight);
+            int width = maxX - minX;
+            int height = maxY - minY;
+            return width > 0 && height > 0 ? new ScissorRect(minX, minY, width, height) : null;
+        }
+
+        private ScissorRect expand(int padding, int maxWidth, int maxHeight) {
+            return fromCorners(this.x - padding, this.y - padding, this.x + this.width + padding, this.y + this.height + padding,
+                    maxWidth, maxHeight);
+        }
+
+        @Nullable
+        private ScissorRect scale(int sourceWidth, int sourceHeight, int targetWidth, int targetHeight) {
+            if (sourceWidth <= 0 || sourceHeight <= 0 || targetWidth <= 0 || targetHeight <= 0) {
+                return null;
+            }
+
+            int x0 = Mth.floor(this.x * (targetWidth / (float) sourceWidth));
+            int y0 = Mth.floor(this.y * (targetHeight / (float) sourceHeight));
+            int x1 = Mth.ceil((this.x + this.width) * (targetWidth / (float) sourceWidth));
+            int y1 = Mth.ceil((this.y + this.height) * (targetHeight / (float) sourceHeight));
+            return fromCorners(x0, y0, x1, y1, targetWidth, targetHeight);
+        }
     }
 
     private static final class CaptureState {
@@ -882,9 +1137,24 @@ public final class HeldItemOutlineRenderer {
         private boolean lastObservedHandEnabled = true;
         private ItemStack lastObservedStack = ItemStack.EMPTY;
         @Nullable
+        private InteractionHand captureHandFilter;
+        @Nullable
         private ResolvedRenderState lastEffectiveState;
         @Nullable
         private ResolvedRenderState pendingState;
+        @Nullable
+        private ResolvedRenderState capturedRenderState;
+        @Nullable
+        private Matrix4f capturedModelViewMatrix;
+        @Nullable
+        private ScissorRect scissorRect;
+        private boolean cachedObservedHandEnabled = true;
+        private ItemStack cachedObservedResolvedStack = ItemStack.EMPTY;
+        @Nullable
+        private HeldItemOutlineEffectProfile cachedBaseProfile;
+        private long cachedRuleRevision = Long.MIN_VALUE;
+        @Nullable
+        private ResolvedRenderState cachedResolvedState;
         private long transitionEndMillis;
 
         private CaptureState(InteractionHand hand) {
@@ -897,6 +1167,10 @@ public final class HeldItemOutlineRenderer {
             this.lastSampledCoverage = 0.0F;
             this.captureActive = false;
             this.restoreTarget = null;
+            this.captureHandFilter = null;
+            this.capturedRenderState = null;
+            this.capturedModelViewMatrix = null;
+            this.scissorRect = null;
             this.embeddiumCompatFramePrepared = false;
             this.embeddiumCompatFrameQueued = false;
         }
@@ -907,6 +1181,10 @@ public final class HeldItemOutlineRenderer {
             this.lastSampledCoverage = 0.0F;
             this.captureActive = false;
             this.restoreTarget = null;
+            this.captureHandFilter = null;
+            this.capturedRenderState = null;
+            this.capturedModelViewMatrix = null;
+            this.scissorRect = null;
             this.embeddiumCompatFramePrepared = false;
             this.embeddiumCompatFrameQueued = false;
         }
@@ -917,6 +1195,11 @@ public final class HeldItemOutlineRenderer {
             this.lastObservedStack = ItemStack.EMPTY;
             this.lastEffectiveState = null;
             this.pendingState = null;
+            this.cachedObservedHandEnabled = true;
+            this.cachedObservedResolvedStack = ItemStack.EMPTY;
+            this.cachedBaseProfile = null;
+            this.cachedRuleRevision = Long.MIN_VALUE;
+            this.cachedResolvedState = null;
             this.transitionEndMillis = 0L;
         }
     }

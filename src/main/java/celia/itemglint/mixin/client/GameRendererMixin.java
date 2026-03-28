@@ -54,23 +54,39 @@ public abstract class GameRendererMixin {
             return;
         }
 
-        for (HeldItemOutlineRenderer.HandEffectTarget target : HeldItemOutlineRenderer.getRenderableHands(player)) {
-            InteractionHand hand = target.hand();
-            if (!HeldItemOutlineRenderer.beginCapture(minecraft, minecraft.getMainRenderTarget(), hand)) {
-                HeldItemOutlineRenderer.debugCompat(minecraft, "GameRendererMixin beginCapture returned false for " + hand);
-                continue;
-            }
+        GameRendererAccessor accessor = (GameRendererAccessor) (Object) this;
+        Matrix4f handProjection = ((GameRenderer) (Object) this)
+                .getProjectionMatrix(accessor.invokeGetFov(minecraft.gameRenderer.getMainCamera(), partialTick, false));
+        HeldItemOutlineRenderer.beginItemInHandRender(handProjection);
+        try {
+            java.util.List<HeldItemOutlineRenderer.HandEffectTarget> targets = HeldItemOutlineRenderer.getRenderableHands(player);
+            for (int index = 0; index < targets.size(); index++) {
+                HeldItemOutlineRenderer.HandEffectTarget target = targets.get(index);
+                HeldItemOutlineRenderer.HandEffectTarget nextTarget = index + 1 < targets.size() ? targets.get(index + 1) : null;
+                boolean batchHands = HeldItemOutlineRenderer.shouldBatchHands(target, nextTarget);
+                InteractionHand hand = target.hand();
+                if (!HeldItemOutlineRenderer.beginCapture(minecraft, minecraft.getMainRenderTarget(), hand,
+                        batchHands ? null : hand, originalPose, target.profile(), target.sampledColors())) {
+                    HeldItemOutlineRenderer.debugCompat(minecraft, "GameRendererMixin beginCapture returned false for " + hand);
+                    continue;
+                }
 
-            try {
-                poseStack.last().pose().set(originalPose);
-                poseStack.last().normal().set(originalNormal);
-                itemInHandRenderer.renderHandsWithItems(partialTick, poseStack, captureBufferSource, player, packedLight);
-                captureBufferSource.endBatch();
-                HeldItemOutlineRenderer.debugCompat(minecraft, "GameRendererMixin finished capture buffer batch for " + hand);
-            } finally {
-                HeldItemOutlineRenderer.endCapture();
+                try {
+                    poseStack.last().pose().set(originalPose);
+                    poseStack.last().normal().set(originalNormal);
+                    itemInHandRenderer.renderHandsWithItems(partialTick, poseStack, captureBufferSource, player, packedLight);
+                    captureBufferSource.endBatch();
+                    HeldItemOutlineRenderer.debugCompat(minecraft, "GameRendererMixin finished capture buffer batch for " + hand);
+                } finally {
+                    HeldItemOutlineRenderer.endCapture();
+                }
+                HeldItemOutlineRenderer.composite(minecraft, minecraft.getMainRenderTarget(), hand);
+                if (batchHands) {
+                    index++;
+                }
             }
-            HeldItemOutlineRenderer.composite(minecraft, minecraft.getMainRenderTarget(), hand, target.profile(), target.sampledColors());
+        } finally {
+            HeldItemOutlineRenderer.endItemInHandRender();
         }
     }
 }
